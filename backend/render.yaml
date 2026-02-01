@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: violencesense-api
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false # Set in Render dashboard
+      - key: ML_SERVICE_URL
+        sync: false # Set in Render dashboard
+      - key: DEFAULT_MODEL_PATH
+        value: /models/violence_detection.pth
+      - key: MODEL_ARCHITECTURE
+        value: videomae
+      - key: CORS_ORIGIN
+        sync: false # Your Vercel frontend URL

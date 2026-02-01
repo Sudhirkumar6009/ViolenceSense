@@ -1,0 +1,212 @@
+import axios, { AxiosInstance } from "axios";
+import config from "../config";
+import logger from "../utils/logger";
+
+export interface InferenceRequest {
+  videoPath: string;
+  modelPath: string;
+  architecture?: string;
+  numFrames?: number;
+}
+
+export interface InferenceResponse {
+  success: boolean;
+  classification: "violence" | "non-violence";
+  confidence: number;
+  probabilities: {
+    violence: number;
+    nonViolence: number;
+  };
+  metrics: {
+    inferenceTime: number;
+    framesProcessed: number;
+  };
+  frameAnalysis?: {
+    totalFrames: number;
+    violentFrames: number;
+    nonViolentFrames: number;
+    frameScores: number[];
+  };
+  error?: string;
+}
+
+export interface ModelLoadRequest {
+  modelPath: string;
+  architecture: string;
+}
+
+export interface ModelLoadResponse {
+  success: boolean;
+  message: string;
+  modelInfo?: {
+    name: string;
+    architecture: string;
+    inputSize: {
+      frames: number;
+      height: number;
+      width: number;
+    };
+    classes: string[];
+  };
+  error?: string;
+}
+
+export interface ModelStatusResponse {
+  isLoaded: boolean;
+  currentModel?: {
+    path: string;
+    architecture: string;
+    loadedAt: string;
+  };
+  gpuAvailable: boolean;
+  gpuMemory?: {
+    total: number;
+    used: number;
+    free: number;
+  };
+}
+
+export interface ModelMetricsResponse {
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1Score: number;
+  confusionMatrix?: {
+    truePositive: number;
+    trueNegative: number;
+    falsePositive: number;
+    falseNegative: number;
+  };
+  totalPredictions: number;
+  avgInferenceTime: number;
+}
+
+class MLServiceClient {
+  private client: AxiosInstance;
+  private baseUrl: string;
+
+  constructor() {
+    this.baseUrl = config.mlService.url;
+    this.client = axios.create({
+      baseURL: this.baseUrl,
+      timeout: config.mlService.timeout,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    this.client.interceptors.request.use(
+      (config) => {
+        logger.debug(
+          `ML Service Request: ${config.method?.toUpperCase()} ${config.url}`,
+        );
+        return config;
+      },
+      (error) => {
+        logger.error("ML Service Request Error:", error);
+        return Promise.reject(error);
+      },
+    );
+
+    this.client.interceptors.response.use(
+      (response) => {
+        logger.debug(`ML Service Response: ${response.status}`);
+        return response;
+      },
+      (error) => {
+        logger.error("ML Service Response Error:", error.message);
+        return Promise.reject(error);
+      },
+    );
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await this.client.get("/health");
+      return response.data.status === "healthy";
+    } catch (error) {
+      logger.error("ML Service health check failed:", error);
+      return false;
+    }
+  }
+
+  async loadModel(request: ModelLoadRequest): Promise<ModelLoadResponse> {
+    try {
+      const response = await this.client.post<ModelLoadResponse>(
+        "/model/load",
+        request,
+      );
+      return response.data;
+    } catch (error: any) {
+      logger.error("Failed to load model:", error.message);
+      return {
+        success: false,
+        message: "Failed to load model",
+        error: error.message,
+      };
+    }
+  }
+
+  async getModelStatus(): Promise<ModelStatusResponse> {
+    try {
+      const response =
+        await this.client.get<ModelStatusResponse>("/model/status");
+      return response.data;
+    } catch (error: any) {
+      logger.error("Failed to get model status:", error.message);
+      return {
+        isLoaded: false,
+        gpuAvailable: false,
+      };
+    }
+  }
+
+  async getModelMetrics(): Promise<ModelMetricsResponse | null> {
+    try {
+      const response =
+        await this.client.get<ModelMetricsResponse>("/model/metrics");
+      return response.data;
+    } catch (error: any) {
+      logger.error("Failed to get model metrics:", error.message);
+      return null;
+    }
+  }
+
+  async runInference(request: InferenceRequest): Promise<InferenceResponse> {
+    try {
+      const response = await this.client.post<InferenceResponse>(
+        "/inference/predict",
+        request,
+      );
+      return response.data;
+    } catch (error: any) {
+      logger.error("Inference failed:", error.message);
+      return {
+        success: false,
+        classification: "non-violence",
+        confidence: 0,
+        probabilities: {
+          violence: 0,
+          nonViolence: 0,
+        },
+        metrics: {
+          inferenceTime: 0,
+          framesProcessed: 0,
+        },
+        error: error.message,
+      };
+    }
+  }
+
+  async unloadModel(): Promise<boolean> {
+    try {
+      const response = await this.client.post("/model/unload");
+      return response.data.success;
+    } catch (error: any) {
+      logger.error("Failed to unload model:", error.message);
+      return false;
+    }
+  }
+}
+
+export default new MLServiceClient();
