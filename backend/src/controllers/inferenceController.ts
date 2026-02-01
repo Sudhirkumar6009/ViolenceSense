@@ -8,9 +8,13 @@ class InferenceController {
   // POST /api/v1/inference/predict - Run inference on a video
   async predict(req: Request, res: Response): Promise<void> {
     try {
+      logger.info(`Inference request body: ${JSON.stringify(req.body)}`);
       const { videoId } = req.body;
 
       if (!videoId) {
+        logger.warn(
+          `Missing videoId in request body: ${JSON.stringify(req.body)}`,
+        );
         res.status(400).json({
           success: false,
           error: "Video ID is required",
@@ -47,7 +51,10 @@ class InferenceController {
         const mlStatus = await mlService.getModelStatus();
         if (!mlStatus.isLoaded) {
           logger.info("Auto-loading model for inference...");
-          const loadResult = await mlService.loadModel({ modelPath, architecture });
+          const loadResult = await mlService.loadModel({
+            modelPath,
+            architecture,
+          });
           if (!loadResult.success) {
             res.status(500).json({
               success: false,
@@ -56,6 +63,19 @@ class InferenceController {
             return;
           }
         }
+
+        // Create model config in database so videoAnalysisService can find it
+        activeModel = await ModelConfig.create({
+          name: "Default Model",
+          modelPath,
+          architecture,
+          inputSize: { frames: 16, height: 224, width: 224 },
+          classes: ["violence", "non-violence"],
+          isActive: true,
+          isLoaded: true,
+          loadedAt: new Date(),
+        });
+        logger.info("Created model config for default model");
       }
 
       // Run analysis

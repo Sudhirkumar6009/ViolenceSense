@@ -9,6 +9,6 @@ const router = Router();
  * @body    videoId - ID of uploaded video (required)
  * @access  Public
  */
-router.post("/predict", inferenceController.predict);
+router.post("/predict", inferenceController.predict.bind(inferenceController));
 
 export default router;

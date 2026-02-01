@@ -56,8 +56,8 @@ const config: IConfig = {
 
   model: {
     defaultPath:
-      process.env.DEFAULT_MODEL_PATH || "./models/violence_detection.pth",
-    architecture: process.env.MODEL_ARCHITECTURE || "videomae",
+      process.env.DEFAULT_MODEL_PATH || "./models/best_violence_model.keras",
+    architecture: process.env.MODEL_ARCHITECTURE || "keras-cnn",
   },
 
   upload: {

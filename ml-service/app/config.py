@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # Model settings
-    default_model_path: str = "./models/violence_detection.pth"
-    model_architecture: str = "videomae"
+    default_model_path: str = "./models/violence_model_legacy.h5"
+    model_architecture: str = "keras-cnn"
     
     # Inference settings
     num_frames: int = 16
@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     batch_size: int = 1
     
     # Device settings
-    device: str = "cuda"
-    use_fp16: bool = True
+    device: str = "cpu"
+    use_fp16: bool = False
     
     # Logging
     log_level: str = "INFO"

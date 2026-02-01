@@ -81,22 +81,65 @@ class InferencePipeline:
             
             # Preprocess frames
             input_tensor = preprocess_frames(frames)
-            input_tensor = input_tensor.to(self.model_manager.device)
             
-            # Run inference
-            with torch.no_grad():
-                if self.model_manager.use_fp16:
-                    with torch.cuda.amp.autocast():
-                        logits = self.model_manager.model(input_tensor)
+            # Run inference using model manager (handles both PyTorch and Keras)
+            if self.model_manager.model_type == "keras":
+                # Keras model - convert to numpy and adjust shape
+                input_data = input_tensor.numpy()
+                
+                # Keras video models expect: (batch, frames, height, width, channels)
+                # Our tensor is: (batch, channels, frames, height, width)
+                # Convert from (B, C, T, H, W) to (B, T, H, W, C)
+                if input_data.ndim == 5 and input_data.shape[1] == 3:
+                    input_data = np.transpose(input_data, (0, 2, 3, 4, 1))
+                
+                logger.info(f"Keras input shape: {input_data.shape}")
+                
+                # Run prediction
+                try:
+                    logits = self.model_manager.model.predict(input_data, verbose=0)
+                    logger.info(f"Keras output shape: {logits.shape}, values: {logits}")
+                except Exception as e:
+                    logger.error(f"Keras prediction failed: {e}")
+                    raise e
+                
+                probs = logits[0]  # Get first batch item
+                
+                # Handle different output formats
+                if len(probs.shape) > 1:
+                    probs = probs.flatten()
+                
+                # If model outputs logits (not probabilities), apply softmax
+                if len(probs) >= 2 and (probs.sum() > 1.1 or probs.min() < 0):
+                    from scipy.special import softmax
+                    probs = softmax(probs)
+                
+                # Handle single output (sigmoid) vs two outputs (softmax)
+                if len(probs) == 1:
+                    # Single output - sigmoid style
+                    violence_prob = float(probs[0])
+                    non_violence_prob = 1.0 - violence_prob
                 else:
-                    logits = self.model_manager.model(input_tensor)
-            
-            # Get probabilities
-            probs = F.softmax(logits, dim=1)[0].cpu().numpy()
-            
-            # Map to class labels (index 0 = violence, index 1 = non-violence)
-            violence_prob = float(probs[0])
-            non_violence_prob = float(probs[1])
+                    # Two outputs - class probabilities
+                    violence_prob = float(probs[0])
+                    non_violence_prob = float(probs[1])
+            else:
+                # PyTorch model
+                input_tensor = input_tensor.to(self.model_manager.device)
+                
+                with torch.no_grad():
+                    if self.model_manager.use_fp16:
+                        with torch.cuda.amp.autocast():
+                            logits = self.model_manager.model(input_tensor)
+                    else:
+                        logits = self.model_manager.model(input_tensor)
+                
+                # Get probabilities
+                probs = F.softmax(logits, dim=1)[0].cpu().numpy()
+                
+                # Map to class labels (index 0 = violence, index 1 = non-violence)
+                violence_prob = float(probs[0])
+                non_violence_prob = float(probs[1])
             
             # Determine classification
             if violence_prob > non_violence_prob:

@@ -55,10 +55,16 @@ class Server {
     // CORS configuration
     this.app.use(
       cors({
-        origin: config.cors.origin,
+        origin: config.nodeEnv === "development" ? "*" : config.cors.origin,
         methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization"],
-        credentials: true,
+        allowedHeaders: ["Content-Type", "Authorization", "Range"],
+        exposedHeaders: [
+          "Content-Range",
+          "Accept-Ranges",
+          "Content-Length",
+          "Content-Type",
+        ],
+        credentials: config.nodeEnv !== "development",
       }),
     );
 

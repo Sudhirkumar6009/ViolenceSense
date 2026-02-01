@@ -30,10 +30,15 @@ class ModelController {
 
       // Validate file extension
       const ext = path.extname(modelPath).toLowerCase();
-      if (ext !== ".pth" && ext !== ".pt") {
+      if (
+        ext !== ".pth" &&
+        ext !== ".pt" &&
+        ext !== ".keras" &&
+        ext !== ".h5"
+      ) {
         res.status(400).json({
           success: false,
-          error: "Invalid model file. Expected .pth or .pt file",
+          error: "Invalid model file. Expected .pth, .pt, .keras, or .h5 file",
         });
         return;
       }

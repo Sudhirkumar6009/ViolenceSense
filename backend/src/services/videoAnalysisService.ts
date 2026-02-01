@@ -2,6 +2,10 @@ import { Video, IVideo, Prediction, ModelConfig } from "../models";
 import mlService, { InferenceResponse } from "./mlService";
 import logger from "../utils/logger";
 import mongoose from "mongoose";
+import path from "path";
+import fs from "fs";
+import os from "os";
+import { getGridFSBucket } from "../config/gridfs";
 
 export interface AnalysisResult {
   success: boolean;
@@ -30,7 +34,46 @@ export interface AnalysisResult {
 }
 
 class VideoAnalysisService {
+  // Extract video from GridFS to temporary file for ML inference
+  private async extractVideoToTemp(video: IVideo): Promise<string> {
+    const bucket = getGridFSBucket();
+    const tempDir = os.tmpdir();
+    const tempFilePath = path.join(tempDir, `violencesense_${video.filename}`);
+
+    logger.info(`Extracting video from GridFS to: ${tempFilePath}`);
+
+    return new Promise((resolve, reject) => {
+      const downloadStream = bucket.openDownloadStream(video.gridfsId);
+      const writeStream = fs.createWriteStream(tempFilePath);
+
+      downloadStream
+        .pipe(writeStream)
+        .on("error", (error) => {
+          logger.error("Error extracting video from GridFS:", error);
+          reject(error);
+        })
+        .on("finish", () => {
+          logger.info(`Video extracted successfully: ${tempFilePath}`);
+          resolve(tempFilePath);
+        });
+    });
+  }
+
+  // Clean up temporary file after inference
+  private cleanupTempFile(filePath: string): void {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        logger.info(`Cleaned up temp file: ${filePath}`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to cleanup temp file: ${filePath}`, error);
+    }
+  }
+
   async analyzeVideo(videoId: string): Promise<AnalysisResult> {
+    let tempFilePath: string | null = null;
+
     try {
       // Find the video
       const video = await Video.findById(videoId);
@@ -62,14 +105,24 @@ class VideoAnalysisService {
       });
       await prediction.save();
 
-      // Run inference
+      // Extract video from GridFS to temporary file
       logger.info(`Starting inference for video: ${video.filename}`);
+      tempFilePath = await this.extractVideoToTemp(video);
+
+      logger.info(`Video path for inference: ${tempFilePath}`);
+
       const inferenceResult: InferenceResponse = await mlService.runInference({
-        videoPath: video.path,
+        videoPath: tempFilePath,
         modelPath: activeModel.modelPath,
         architecture: activeModel.architecture,
         numFrames: activeModel.inputSize.frames,
       });
+
+      // Clean up temp file after inference
+      if (tempFilePath) {
+        this.cleanupTempFile(tempFilePath);
+        tempFilePath = null;
+      }
 
       if (!inferenceResult.success) {
         prediction.status = "failed";
@@ -129,6 +182,10 @@ class VideoAnalysisService {
         },
       };
     } catch (error: any) {
+      // Clean up temp file on error
+      if (tempFilePath) {
+        this.cleanupTempFile(tempFilePath);
+      }
       logger.error("Video analysis failed:", error);
       return {
         success: false,

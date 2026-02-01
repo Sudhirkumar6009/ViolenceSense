@@ -110,18 +110,21 @@ def preprocess_frames(
     Returns:
         Preprocessed tensor of shape (1, C, T, H, W)
     """
-    # Convert to float and scale to [0, 1]
+    # Convert to float32 and scale to [0, 1]
     frames = frames.astype(np.float32) / 255.0
     
-    # Normalize
+    # Normalize with explicit float32 arrays
     if normalize:
+        mean = np.array(mean, dtype=np.float32)
+        std = np.array(std, dtype=np.float32)
         frames = (frames - mean) / std
     
     # Convert to tensor: (T, H, W, C) -> (C, T, H, W)
     frames = np.transpose(frames, (3, 0, 1, 2))
     
     # Add batch dimension: (C, T, H, W) -> (1, C, T, H, W)
-    tensor = torch.from_numpy(frames).unsqueeze(0)
+    tensor = torch.from_numpy(frames).float()  # Ensure float32
+    tensor = tensor.unsqueeze(0)
     
     return tensor
 

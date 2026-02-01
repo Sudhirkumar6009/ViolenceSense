@@ -1,4 +1,7 @@
 import axios, { AxiosInstance } from "axios";
+import FormData from "form-data";
+import fs from "fs";
+import path from "path";
 import config from "../config";
 import logger from "../utils/logger";
 
@@ -174,6 +177,17 @@ class MLServiceClient {
 
   async runInference(request: InferenceRequest): Promise<InferenceResponse> {
     try {
+      // Check if ML service is remote (Hugging Face) - use file upload
+      const isRemoteService =
+        this.baseUrl.includes("hf.space") ||
+        this.baseUrl.includes("huggingface");
+
+      if (isRemoteService) {
+        // Use file upload for remote services
+        return await this.runInferenceWithUpload(request);
+      }
+
+      // Use path-based inference for local services
       const response = await this.client.post<InferenceResponse>(
         "/inference/predict",
         request,
@@ -194,6 +208,64 @@ class MLServiceClient {
           framesProcessed: 0,
         },
         error: error.message,
+      };
+    }
+  }
+
+  async runInferenceWithUpload(
+    request: InferenceRequest,
+  ): Promise<InferenceResponse> {
+    try {
+      // Verify file exists
+      if (!fs.existsSync(request.videoPath)) {
+        throw new Error(`Video file not found: ${request.videoPath}`);
+      }
+
+      // Create form data with file upload
+      const formData = new FormData();
+      const fileStream = fs.createReadStream(request.videoPath);
+      const filename = path.basename(request.videoPath);
+
+      formData.append("video", fileStream, {
+        filename: filename,
+        contentType: "video/mp4",
+      });
+
+      if (request.numFrames) {
+        formData.append("numFrames", request.numFrames.toString());
+      }
+
+      logger.info(`Uploading video to remote ML service: ${filename}`);
+
+      const response = await axios.post<InferenceResponse>(
+        `${this.baseUrl}/inference/predict-upload`,
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: config.mlService.timeout,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        },
+      );
+
+      return response.data;
+    } catch (error: any) {
+      logger.error("Inference with upload failed:", error.message);
+      return {
+        success: false,
+        classification: "non-violence",
+        confidence: 0,
+        probabilities: {
+          violence: 0,
+          nonViolence: 0,
+        },
+        metrics: {
+          inferenceTime: 0,
+          framesProcessed: 0,
+        },
+        error: error.response?.data?.detail || error.message,
       };
     }
   }

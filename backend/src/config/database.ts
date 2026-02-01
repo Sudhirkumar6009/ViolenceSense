@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import config from "./index";
 import logger from "../utils/logger";
+import { initGridFS } from "./gridfs";
 
 class Database {
   private static instance: Database;
@@ -25,16 +26,25 @@ class Database {
       const options: mongoose.ConnectOptions = {
         dbName: config.mongodb.dbName,
         maxPoolSize: 10,
-        serverSelectionTimeoutMS: 5000,
+        serverSelectionTimeoutMS: 10000,
         socketTimeoutMS: 45000,
+        retryWrites: true,
+        w: "majority",
       };
+
+      logger.info(`Connecting to MongoDB Atlas...`);
+      logger.info(`Database: ${config.mongodb.dbName}`);
 
       await mongoose.connect(config.mongodb.uri, options);
 
       this.isConnected = true;
       logger.info(
-        `✅ MongoDB connected successfully to ${config.mongodb.dbName}`,
+        `✅ MongoDB Atlas connected successfully to ${config.mongodb.dbName}`,
       );
+
+      // Initialize GridFS for video storage
+      initGridFS();
+      logger.info(`✅ GridFS initialized for video storage`);
 
       mongoose.connection.on("error", (error) => {
         logger.error("MongoDB connection error:", error);

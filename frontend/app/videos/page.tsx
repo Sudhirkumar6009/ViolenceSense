@@ -13,11 +13,16 @@ import {
   Shield,
   Brain,
   Filter,
+  Play,
+  X,
 } from "lucide-react";
 import { Navbar } from "@/components";
 import { apiService } from "@/services/api";
 import { Video as VideoType, Prediction } from "@/types";
 import { cn, formatBytes, formatDate, formatPercentage } from "@/lib/utils";
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
 
 interface VideoWithPrediction extends VideoType {
   prediction?: Prediction | null;
@@ -32,6 +37,8 @@ export default function VideosPage() {
     "all" | "violence" | "non-violence" | "uploaded"
   >("all");
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [selectedVideo, setSelectedVideo] =
+    useState<VideoWithPrediction | null>(null);
 
   useEffect(() => {
     fetchVideos();
@@ -102,35 +109,6 @@ export default function VideosPage() {
     if (filter === "all") return true;
     return getVideoStatus(video) === filter;
   });
-
-  const getStatusBadge = (video: VideoWithPrediction) => {
-    const status = getVideoStatus(video);
-
-    if (status === "violence") {
-      return (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-danger-500/10 text-danger-400 text-sm font-medium">
-          <ShieldAlert className="w-4 h-4" />
-          Violence
-        </div>
-      );
-    }
-
-    if (status === "non-violence") {
-      return (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-success-500/10 text-success-400 text-sm font-medium">
-          <Shield className="w-4 h-4" />
-          Non-Violence
-        </div>
-      );
-    }
-
-    return (
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-700 text-dark-400 text-sm font-medium">
-        <Clock className="w-4 h-4" />
-        Uploaded
-      </div>
-    );
-  };
 
   return (
     <div className="min-h-screen">
@@ -227,19 +205,21 @@ export default function VideosPage() {
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
+                    {/* Video Thumbnail/Icon with Status */}
                     <div
                       className={cn(
-                        "w-16 h-16 rounded-xl flex items-center justify-center",
+                        "w-16 h-16 rounded-xl flex items-center justify-center relative cursor-pointer group",
                         getVideoStatus(video) === "violence"
                           ? "bg-danger-500/20"
                           : getVideoStatus(video) === "non-violence"
                             ? "bg-success-500/20"
                             : "bg-dark-800",
                       )}
+                      onClick={() => setSelectedVideo(video)}
                     >
                       <Video
                         className={cn(
-                          "w-8 h-8",
+                          "w-8 h-8 group-hover:opacity-50 transition-opacity",
                           getVideoStatus(video) === "violence"
                             ? "text-danger-400"
                             : getVideoStatus(video) === "non-violence"
@@ -247,11 +227,32 @@ export default function VideosPage() {
                               : "text-primary-400",
                         )}
                       />
+                      <Play className="w-6 h-6 text-white absolute opacity-0 group-hover:opacity-100 transition-opacity" />
                     </div>
-                    <div>
-                      <h3 className="font-medium text-white mb-1">
-                        {video.originalName}
-                      </h3>
+
+                    {/* Video Info */}
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-1">
+                        <h3 className="font-medium text-white">
+                          {video.originalName}
+                        </h3>
+                        {/* Inline Status Badge */}
+                        {getVideoStatus(video) === "violence" && (
+                          <span className="px-2 py-0.5 rounded-full bg-danger-500/20 text-danger-400 text-xs font-semibold">
+                            Violence
+                          </span>
+                        )}
+                        {getVideoStatus(video) === "non-violence" && (
+                          <span className="px-2 py-0.5 rounded-full bg-success-500/20 text-success-400 text-xs font-semibold">
+                            Non-Violence
+                          </span>
+                        )}
+                        {getVideoStatus(video) === "uploaded" && (
+                          <span className="px-2 py-0.5 rounded-full bg-dark-700 text-dark-400 text-xs font-semibold">
+                            Pending
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-4 text-sm text-dark-400">
                         <span>{formatBytes(video.size)}</span>
                         <span>•</span>
@@ -261,6 +262,7 @@ export default function VideosPage() {
                             <span>•</span>
                             <span
                               className={cn(
+                                "font-medium",
                                 getVideoStatus(video) === "violence"
                                   ? "text-danger-400"
                                   : "text-success-400",
@@ -275,35 +277,45 @@ export default function VideosPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4">
-                    {getStatusBadge(video)}
+                  <div className="flex items-center gap-3">
+                    {/* View Video Button */}
+                    <button
+                      onClick={() => setSelectedVideo(video)}
+                      className="flex items-center gap-2 px-3 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg transition-colors"
+                    >
+                      <Play className="w-4 h-4 text-primary-400" />
+                      <span className="text-sm text-white font-medium">
+                        View Video
+                      </span>
+                    </button>
 
-                    <div className="flex items-center gap-2">
-                      {getVideoStatus(video) === "uploaded" && (
-                        <button
-                          onClick={() => handleAnalyze(video._id)}
-                          disabled={analyzingId === video._id}
-                          className="flex items-center gap-2 px-3 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
-                        >
-                          {analyzingId === video._id ? (
-                            <Loader2 className="w-4 h-4 text-white animate-spin" />
-                          ) : (
-                            <Brain className="w-4 h-4 text-white" />
-                          )}
-                          <span className="text-sm text-white font-medium">
-                            {analyzingId === video._id
-                              ? "Analyzing..."
-                              : "Predict"}
-                          </span>
-                        </button>
-                      )}
+                    {/* Analyze Button */}
+                    {getVideoStatus(video) === "uploaded" && (
                       <button
-                        onClick={() => handleDelete(video._id)}
-                        className="p-2 hover:bg-danger-500/10 rounded-lg transition-colors"
+                        onClick={() => handleAnalyze(video._id)}
+                        disabled={analyzingId === video._id}
+                        className="flex items-center gap-2 px-3 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
                       >
-                        <Trash2 className="w-5 h-5 text-dark-400 hover:text-danger-400" />
+                        {analyzingId === video._id ? (
+                          <Loader2 className="w-4 h-4 text-white animate-spin" />
+                        ) : (
+                          <Brain className="w-4 h-4 text-white" />
+                        )}
+                        <span className="text-sm text-white font-medium">
+                          {analyzingId === video._id
+                            ? "Analyzing..."
+                            : "Predict"}
+                        </span>
                       </button>
-                    </div>
+                    )}
+
+                    {/* Delete Button */}
+                    <button
+                      onClick={() => handleDelete(video._id)}
+                      className="p-2 hover:bg-danger-500/10 rounded-lg transition-colors"
+                    >
+                      <Trash2 className="w-5 h-5 text-dark-400 hover:text-danger-400" />
+                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -334,6 +346,145 @@ export default function VideosPage() {
           </div>
         )}
       </main>
+
+      {/* Video Player Modal */}
+      {selectedVideo && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setSelectedVideo(null)}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            className="relative w-full max-w-4xl bg-dark-900 rounded-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-dark-700">
+              <div className="flex items-center gap-3">
+                <h3 className="text-lg font-semibold text-white">
+                  {selectedVideo.originalName}
+                </h3>
+                {getVideoStatus(selectedVideo) === "violence" && (
+                  <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-danger-500/20 text-danger-400 text-sm font-medium">
+                    <ShieldAlert className="w-4 h-4" />
+                    Violence Detected
+                  </span>
+                )}
+                {getVideoStatus(selectedVideo) === "non-violence" && (
+                  <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-success-500/20 text-success-400 text-sm font-medium">
+                    <Shield className="w-4 h-4" />
+                    Non-Violence
+                  </span>
+                )}
+                {getVideoStatus(selectedVideo) === "uploaded" && (
+                  <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-dark-700 text-dark-400 text-sm font-medium">
+                    <Clock className="w-4 h-4" />
+                    Not Analyzed
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => setSelectedVideo(null)}
+                className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-dark-400 hover:text-white" />
+              </button>
+            </div>
+
+            {/* Video Player */}
+            <div className="relative bg-black aspect-video flex items-center justify-center">
+              {/* Check if video format is browser-supported */}
+              {["video/mp4", "video/webm", "video/ogg"].includes(
+                selectedVideo.mimetype?.toLowerCase() || "",
+              ) ? (
+                <video
+                  key={selectedVideo._id}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-contain"
+                  onError={(e) => {
+                    console.error("Video playback error:", e);
+                  }}
+                >
+                  <source
+                    src={`${API_URL}/videos/${selectedVideo._id}/stream`}
+                    type={selectedVideo.mimetype || "video/mp4"}
+                  />
+                  Your browser does not support the video tag.
+                </video>
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-4 text-center p-8">
+                  <FileVideo className="w-16 h-16 text-dark-400" />
+                  <div>
+                    <h4 className="text-lg font-medium text-white mb-2">
+                      Video Format Not Supported
+                    </h4>
+                    <p className="text-dark-400 text-sm mb-4">
+                      This video ({selectedVideo.mimetype || "unknown format"})
+                      cannot be played directly in the browser.
+                      <br />
+                      Please download it to play with a media player like VLC.
+                    </p>
+                    <a
+                      href={`${API_URL}/videos/${selectedVideo._id}/stream`}
+                      download={selectedVideo.originalName}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors text-white font-medium"
+                    >
+                      <FileVideo className="w-4 h-4" />
+                      Download Video
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Video Info Footer */}
+            <div className="p-4 border-t border-dark-700">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-6 text-sm text-dark-400">
+                  <span>Size: {formatBytes(selectedVideo.size)}</span>
+                  <span>Uploaded: {formatDate(selectedVideo.uploadedAt)}</span>
+                  {selectedVideo.prediction && (
+                    <span
+                      className={cn(
+                        "font-medium",
+                        getVideoStatus(selectedVideo) === "violence"
+                          ? "text-danger-400"
+                          : "text-success-400",
+                      )}
+                    >
+                      Confidence:{" "}
+                      {formatPercentage(selectedVideo.prediction.confidence)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {getVideoStatus(selectedVideo) === "uploaded" && (
+                    <button
+                      onClick={() => {
+                        handleAnalyze(selectedVideo._id);
+                        setSelectedVideo(null);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors"
+                    >
+                      <Brain className="w-4 h-4 text-white" />
+                      <span className="text-sm text-white font-medium">
+                        Analyze Now
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
     </div>
   );
 }

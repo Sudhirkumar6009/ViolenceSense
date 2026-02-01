@@ -1,21 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import path from "path";
-import { v4 as uuidv4 } from "uuid";
 import config from "../config";
 import logger from "../utils/logger";
 
-// Configure storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, config.upload.uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueId = uuidv4();
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `${uniqueId}${ext}`);
-  },
-});
+// Use memory storage for GridFS uploads (videos stored in MongoDB)
+const storage = multer.memoryStorage();
 
 // File filter
 const fileFilter = (
@@ -36,7 +26,7 @@ const fileFilter = (
   }
 };
 
-// Multer upload instance
+// Multer upload instance with memory storage
 export const upload = multer({
   storage,
   fileFilter,
