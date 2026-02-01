@@ -84,6 +84,7 @@
 <td width="50%">
 
 ### 🎥 Video Processing
+
 - Multi-format support (MP4, AVI, MOV, MKV)
 - Automatic frame extraction & preprocessing
 - GridFS storage in MongoDB Atlas
@@ -93,6 +94,7 @@
 <td width="50%">
 
 ### 🤖 AI Analysis
+
 - MobileNetV2-LSTM deep learning model
 - Binary classification (Violence/Non-Violence)
 - Confidence scores with probabilities
@@ -104,6 +106,7 @@
 <td width="50%">
 
 ### 📊 Dashboard
+
 - Real-time prediction results
 - Video history management
 - Model status monitoring
@@ -113,6 +116,7 @@
 <td width="50%">
 
 ### 🔧 Developer Experience
+
 - RESTful API with full documentation
 - TypeScript throughout
 - Docker support
@@ -126,11 +130,11 @@
 
 ## 🌐 Live Demo
 
-| Service | URL | Status |
-|---------|-----|--------|
-| 🖥️ **Frontend** | [violencesense.vercel.app](https://violencesense.vercel.app) | ![Vercel](https://img.shields.io/badge/Vercel-Live-00C853?style=flat-square) |
-| ⚙️ **Backend API** | [violencesense-api.onrender.com](https://violencesense-api.onrender.com) | ![Render](https://img.shields.io/badge/Render-Live-46E3B7?style=flat-square) |
-| 🧠 **ML Service** | [huggingface.co/spaces/SudhirKuchara/violencesense-ml](https://huggingface.co/spaces/SudhirKuchara/violencesense-ml) | ![HuggingFace](https://img.shields.io/badge/HuggingFace-Live-FFD21E?style=flat-square) |
+| Service            | URL                                                                                                                  | Status                                                                                 |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 🖥️ **Frontend**    | [violencesense.vercel.app](https://violencesense.vercel.app)                                                         | ![Vercel](https://img.shields.io/badge/Vercel-Live-00C853?style=flat-square)           |
+| ⚙️ **Backend API** | [violencesense-api.onrender.com](https://violencesense-api.onrender.com)                                             | ![Render](https://img.shields.io/badge/Render-Live-46E3B7?style=flat-square)           |
+| 🧠 **ML Service**  | [huggingface.co/spaces/SudhirKuchara/violencesense-ml](https://huggingface.co/spaces/SudhirKuchara/violencesense-ml) | ![HuggingFace](https://img.shields.io/badge/HuggingFace-Live-FFD21E?style=flat-square) |
 
 ---
 
@@ -283,12 +287,12 @@ ViolenceSense/
 
 ### Prerequisites
 
-| Requirement | Version | Installation |
-|-------------|---------|--------------|
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Python | 3.9+ | [python.org](https://python.org) |
-| MongoDB | 6+ | [mongodb.com](https://mongodb.com) or use Atlas |
-| Git | Latest | [git-scm.com](https://git-scm.com) |
+| Requirement | Version | Installation                                    |
+| ----------- | ------- | ----------------------------------------------- |
+| Node.js     | 18+     | [nodejs.org](https://nodejs.org)                |
+| Python      | 3.9+    | [python.org](https://python.org)                |
+| MongoDB     | 6+      | [mongodb.com](https://mongodb.com) or use Atlas |
+| Git         | Latest  | [git-scm.com](https://git-scm.com)              |
 
 ### Quick Start
 
@@ -323,6 +327,7 @@ NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1
 # Start development server
 npm run dev
 ```
+
 </details>
 
 <details>
@@ -342,6 +347,7 @@ ML_SERVICE_URL=http://localhost:8000
 # Start development server
 npm run dev
 ```
+
 </details>
 
 <details>
@@ -362,6 +368,7 @@ pip install -r requirements.txt
 # Start the service
 python main.py
 ```
+
 </details>
 
 ### Using Docker
@@ -386,8 +393,8 @@ docker-compose down
 <details>
 <summary><strong>Frontend (.env.local)</strong></summary>
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable              | Description     | Default                        |
+| --------------------- | --------------- | ------------------------------ |
 | `NEXT_PUBLIC_API_URL` | Backend API URL | `http://localhost:5000/api/v1` |
 
 </details>
@@ -395,26 +402,26 @@ docker-compose down
 <details>
 <summary><strong>Backend (.env)</strong></summary>
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Server port | `5000` |
-| `NODE_ENV` | Environment | `development` |
-| `MONGODB_URI` | MongoDB connection string | - |
-| `MONGODB_DB_NAME` | Database name | `ViolenceSense` |
-| `ML_SERVICE_URL` | ML service URL | `http://localhost:8000` |
-| `DEFAULT_MODEL_PATH` | Model file path | `./models/violence_model_legacy.h5` |
-| `MODEL_ARCHITECTURE` | Model type | `keras-cnn` |
-| `CORS_ORIGIN` | Allowed origins | `http://localhost:3000` |
+| Variable             | Description               | Default                             |
+| -------------------- | ------------------------- | ----------------------------------- |
+| `PORT`               | Server port               | `5000`                              |
+| `NODE_ENV`           | Environment               | `development`                       |
+| `MONGODB_URI`        | MongoDB connection string | -                                   |
+| `MONGODB_DB_NAME`    | Database name             | `ViolenceSense`                     |
+| `ML_SERVICE_URL`     | ML service URL            | `http://localhost:8000`             |
+| `DEFAULT_MODEL_PATH` | Model file path           | `./models/violence_model_legacy.h5` |
+| `MODEL_ARCHITECTURE` | Model type                | `keras-cnn`                         |
+| `CORS_ORIGIN`        | Allowed origins           | `http://localhost:3000`             |
 
 </details>
 
 <details>
 <summary><strong>ML Service (.env)</strong></summary>
 
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable     | Description       | Default                             |
+| ------------ | ----------------- | ----------------------------------- |
 | `MODEL_PATH` | Path to .h5 model | `./models/violence_model_legacy.h5` |
-| `DEVICE` | Inference device | `cpu` |
+| `DEVICE`     | Inference device  | `cpu`                               |
 
 </details>
 
@@ -423,6 +430,7 @@ docker-compose down
 ## 📡 API Reference
 
 ### Base URL
+
 ```
 Production: https://violencesense-api.onrender.com/api/v1
 Development: http://localhost:5000/api/v1
@@ -433,15 +441,16 @@ Development: http://localhost:5000/api/v1
 <details>
 <summary><strong>📹 Videos</strong></summary>
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/videos/upload` | Upload a video file |
-| `GET` | `/videos` | List all videos (paginated) |
-| `GET` | `/videos/:id` | Get video details |
-| `GET` | `/videos/:id/stream` | Stream video content |
-| `DELETE` | `/videos/:id` | Delete video |
+| Method   | Endpoint             | Description                 |
+| -------- | -------------------- | --------------------------- |
+| `POST`   | `/videos/upload`     | Upload a video file         |
+| `GET`    | `/videos`            | List all videos (paginated) |
+| `GET`    | `/videos/:id`        | Get video details           |
+| `GET`    | `/videos/:id/stream` | Stream video content        |
+| `DELETE` | `/videos/:id`        | Delete video                |
 
 **Upload Video Example:**
+
 ```bash
 curl -X POST \
   -F "video=@sample.mp4" \
@@ -453,11 +462,12 @@ curl -X POST \
 <details>
 <summary><strong>🤖 Inference</strong></summary>
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
+| Method | Endpoint             | Description            |
+| ------ | -------------------- | ---------------------- |
 | `POST` | `/inference/predict` | Run violence detection |
 
 **Predict Example:**
+
 ```bash
 curl -X POST \
   -H "Content-Type: application/json" \
@@ -466,6 +476,7 @@ curl -X POST \
 ```
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -485,31 +496,31 @@ curl -X POST \
 <details>
 <summary><strong>🧠 Model</strong></summary>
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/model/load` | Load a model |
-| `GET` | `/model/status` | Get model status |
-| `GET` | `/model/current` | Get current model info |
+| Method | Endpoint         | Description            |
+| ------ | ---------------- | ---------------------- |
+| `POST` | `/model/load`    | Load a model           |
+| `GET`  | `/model/status`  | Get model status       |
+| `GET`  | `/model/current` | Get current model info |
 
 </details>
 
 <details>
 <summary><strong>📊 Predictions</strong></summary>
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/predictions` | List all predictions |
-| `GET` | `/predictions/:id` | Get prediction details |
+| Method | Endpoint           | Description            |
+| ------ | ------------------ | ---------------------- |
+| `GET`  | `/predictions`     | List all predictions   |
+| `GET`  | `/predictions/:id` | Get prediction details |
 
 </details>
 
 <details>
 <summary><strong>❤️ Health</strong></summary>
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | API health check |
-| `GET` | `/health/detailed` | Detailed system status |
+| Method | Endpoint           | Description            |
+| ------ | ------------------ | ---------------------- |
+| `GET`  | `/health`          | API health check       |
+| `GET`  | `/health/detailed` | Detailed system status |
 
 </details>
 
@@ -550,14 +561,14 @@ Input (16 frames × 224 × 224 × 3)
 
 ### Model Details
 
-| Property | Value |
-|----------|-------|
-| **Architecture** | MobileNetV2 + LSTM |
-| **Input Shape** | (16, 224, 224, 3) |
+| Property           | Value                      |
+| ------------------ | -------------------------- |
+| **Architecture**   | MobileNetV2 + LSTM         |
+| **Input Shape**    | (16, 224, 224, 3)          |
 | **Output Classes** | 2 (Violence, Non-Violence) |
-| **File Format** | Keras H5 (.h5) |
-| **File Size** | ~15 MB |
-| **Framework** | TensorFlow/Keras |
+| **File Format**    | Keras H5 (.h5)             |
+| **File Size**      | ~15 MB                     |
+| **Framework**      | TensorFlow/Keras           |
 
 ### Training Dataset
 
@@ -607,12 +618,12 @@ The model was trained on the [Real Life Violence Situations Dataset](https://www
 
 <div align="center">
 
-| Dashboard | Video Analysis |
-|-----------|----------------|
+| Dashboard                                      | Video Analysis                               |
+| ---------------------------------------------- | -------------------------------------------- |
 | ![Dashboard](./docs/screenshots/dashboard.png) | ![Analysis](./docs/screenshots/analysis.png) |
 
-| Upload | Results |
-|--------|---------|
+| Upload                                   | Results                                    |
+| ---------------------------------------- | ------------------------------------------ |
 | ![Upload](./docs/screenshots/upload.png) | ![Results](./docs/screenshots/results.png) |
 
 </div>
@@ -623,22 +634,22 @@ The model was trained on the [Real Life Violence Situations Dataset](https://www
 
 ### Inference Benchmarks
 
-| Metric | Value |
-|--------|-------|
-| **Accuracy** | 91.2% |
-| **Precision** | 89.5% |
-| **Recall** | 93.1% |
-| **F1 Score** | 91.3% |
+| Metric             | Value           |
+| ------------------ | --------------- |
+| **Accuracy**       | 91.2%           |
+| **Precision**      | 89.5%           |
+| **Recall**         | 93.1%           |
+| **F1 Score**       | 91.3%           |
 | **Inference Time** | ~2-5s per video |
 
 ### System Requirements
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **CPU** | 2 cores | 4+ cores |
-| **RAM** | 4 GB | 8+ GB |
-| **Storage** | 1 GB | 5+ GB |
-| **GPU** | Optional | CUDA-compatible |
+| Component   | Minimum  | Recommended     |
+| ----------- | -------- | --------------- |
+| **CPU**     | 2 cores  | 4+ cores        |
+| **RAM**     | 4 GB     | 8+ GB           |
+| **Storage** | 1 GB     | 5+ GB           |
+| **GPU**     | Optional | CUDA-compatible |
 
 ---
 
