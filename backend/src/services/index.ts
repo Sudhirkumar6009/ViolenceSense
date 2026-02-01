@@ -1,2 +1,4 @@
-export { default as mlService } from "./mlService";
-export { default as videoAnalysisService } from "./videoAnalysisService";
+import mlService from "./mlService";
+import videoAnalysisService from "./videoAnalysisService";
+
+export { mlService, videoAnalysisService };

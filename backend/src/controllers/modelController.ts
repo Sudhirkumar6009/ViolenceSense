@@ -1,8 +1,8 @@
 import { Request, Response } from "express";
 import fs from "fs";
 import path from "path";
-import { ModelConfig } from "../models";
-import { mlService } from "../services";
+import ModelConfig from "../models/ModelConfig";
+import mlService from "../services/mlService";
 import logger from "../utils/logger";
 
 class ModelController {

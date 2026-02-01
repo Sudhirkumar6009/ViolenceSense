@@ -12,7 +12,7 @@ import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware";
 import logger from "./utils/logger";
 import mlService from "./services/mlService";
-import { ModelConfig } from "./models";
+import ModelConfig from "./models/ModelConfig";
 
 class Server {
   private app: Express;
