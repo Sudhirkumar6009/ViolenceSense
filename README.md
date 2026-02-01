@@ -50,7 +50,6 @@
 - [Configuration](#-configuration)
 - [API Reference](#-api-reference)
 - [Model Information](#-model-information)
-- [Deployment](#-deployment)
 - [Screenshots](#-screenshots)
 - [Performance](#-performance)
 - [Contributing](#-contributing)
@@ -581,40 +580,7 @@ The model was trained on the [Real Life Violence Situations Dataset](https://www
 
 ---
 
-## 🚢 Deployment
-
-### Frontend (Vercel)
-
-1. Connect your GitHub repository to Vercel
-2. Set root directory to `frontend`
-3. Add environment variable:
-   ```
-   NEXT_PUBLIC_API_URL=https://your-backend.onrender.com/api/v1
-   ```
-4. Deploy!
-
-### Backend (Render)
-
-1. Create a new Web Service on Render
-2. Connect your GitHub repository
-3. Set root directory to `backend`
-4. Build command: `npm ci && npm run build`
-5. Start command: `node dist/server.js`
-6. Add environment variables in Render dashboard
-
-### ML Service (Hugging Face Spaces)
-
-1. Create a new Space (Docker SDK)
-2. Push ml-service to the Space:
-   ```bash
-   cd ml-service
-   git remote add space https://huggingface.co/spaces/YOUR_USERNAME/violencesense-ml
-   git push space main
-   ```
-
----
-
-## 📸 Screenshots
+## Screenshots
 
 <div align="center">
 
