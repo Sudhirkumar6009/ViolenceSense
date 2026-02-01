@@ -4,7 +4,7 @@ services:
     env: node
     region: oregon
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: rm -rf node_modules && npm install && npm run build
     startCommand: node dist/server.js
     healthCheckPath: /api/v1/health
     envVars:
@@ -13,14 +13,14 @@ services:
       - key: PORT
         value: 5000
       - key: MONGODB_URI
-        sync: false # Set in Render dashboard
+        sync: false
       - key: MONGODB_DB_NAME
         value: ViolenceSense
       - key: ML_SERVICE_URL
-        sync: false # Set in Render dashboard (e.g., your Hugging Face Space URL)
+        sync: false
       - key: DEFAULT_MODEL_PATH
         value: ./models/violence_model_legacy.h5
       - key: MODEL_ARCHITECTURE
         value: keras-cnn
       - key: CORS_ORIGIN
-        sync: false # Your Vercel frontend URL
+        sync: false
