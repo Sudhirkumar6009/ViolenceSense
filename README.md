@@ -4,10 +4,9 @@
 
 ### AI-Powered Real-Time Video Violence Detection System
 
-[![Live Demo](https://img.shields.io/badge/🌐_Live_Demo-ViolenceSense-00C853?style=for-the-badge)](https://violencesense.vercel.app)
-[![Report](https://img.shields.io/badge/📄_Project_Report-View_PDF-2196F3?style=for-the-badge)](https://drive.google.com/file/d/YOUR_REPORT_ID/view)
+[![Report](https://img.shields.io/badge/📄_Project_Report-View_PDF-2196F3?style=for-the-badge)](https://drive.google.com/file/d/1qN-nHZitUcRVDV3NqruWSkXukgkPH05f)
 [![Dataset](https://img.shields.io/badge/📊_Dataset-Kaggle-20BEFF?style=for-the-badge)](https://www.kaggle.com/datasets/mohamedmustafa/real-life-violence-situations-dataset)
-[![Colab](https://img.shields.io/badge/🔬_Training_Notebook-Google_Colab-F9AB00?style=for-the-badge)](https://colab.research.google.com/drive/YOUR_COLAB_ID)
+[![Colab](https://img.shields.io/badge/🔬_Training_Notebook-Google_Colab-F9AB00?style=for-the-badge)](https://colab.research.google.com/drive/1YkII0c6DETnqfUW-YLNha6ShCfyk2gWE?ts=697f3c76)
 
 <br/>
 
