@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import { Readable } from "stream";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
-import Video from "../models/Video";
+import Video from "../models/video";
 import videoAnalysisService from "../services/videoAnalysisService";
 import { getGridFSBucket } from "../config/gridfs";
 import logger from "../utils/logger";

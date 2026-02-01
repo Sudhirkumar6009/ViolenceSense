@@ -1,6 +1,6 @@
-import Video, { IVideo } from "../models/Video";
-import Prediction from "../models/Prediction";
-import ModelConfig from "../models/ModelConfig";
+import Video, { IVideo } from "../models/video";
+import Prediction from "../models/prediction";
+import ModelConfig from "../models/modelConfig";
 import mlService, { InferenceResponse } from "./mlService";
 import logger from "../utils/logger";
 import mongoose from "mongoose";

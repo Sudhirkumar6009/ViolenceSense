@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
-import Prediction from "../models/Prediction";
-import Video from "../models/Video";
-import ModelConfig from "../models/ModelConfig";
+import Prediction from "../models/prediction";
+import Video from "../models/video";
+import ModelConfig from "../models/modelConfig";
 import videoAnalysisService from "../services/videoAnalysisService";
 import mlService from "../services/mlService";
 import logger from "../utils/logger";
