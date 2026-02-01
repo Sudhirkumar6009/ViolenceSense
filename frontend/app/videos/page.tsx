@@ -5,25 +5,33 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import {
   Video,
-  Play,
   Trash2,
   Clock,
-  CheckCircle,
   Loader2,
-  XCircle,
   FileVideo,
+  ShieldAlert,
+  Shield,
   Brain,
+  Filter,
 } from "lucide-react";
 import { Navbar } from "@/components";
 import { apiService } from "@/services/api";
-import { Video as VideoType } from "@/types";
-import { cn, formatBytes, formatDate, getStatusColor } from "@/lib/utils";
+import { Video as VideoType, Prediction } from "@/types";
+import { cn, formatBytes, formatDate, formatPercentage } from "@/lib/utils";
+
+interface VideoWithPrediction extends VideoType {
+  prediction?: Prediction | null;
+}
 
 export default function VideosPage() {
-  const [videos, setVideos] = useState<VideoType[]>([]);
+  const [videos, setVideos] = useState<VideoWithPrediction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [filter, setFilter] = useState<
+    "all" | "violence" | "non-violence" | "uploaded"
+  >("all");
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchVideos();
@@ -32,9 +40,25 @@ export default function VideosPage() {
   const fetchVideos = async () => {
     setIsLoading(true);
     try {
-      const response = await apiService.getVideos(page, 10);
+      const response = await apiService.getVideos(page, 20);
       if (response.success && response.data) {
-        setVideos(response.data);
+        // Fetch predictions for each video
+        const videosWithPredictions = await Promise.all(
+          response.data.map(async (video) => {
+            try {
+              const predResponse = await apiService.getPredictionsByVideo(
+                video._id,
+              );
+              const predictions = predResponse.data || [];
+              const latestPrediction =
+                predictions.length > 0 ? predictions[0] : null;
+              return { ...video, prediction: latestPrediction };
+            } catch {
+              return { ...video, prediction: null };
+            }
+          }),
+        );
+        setVideos(videosWithPredictions);
         setTotalPages(response.pagination?.pages || 1);
       }
     } catch (error) {
@@ -55,17 +79,57 @@ export default function VideosPage() {
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "completed":
-        return <CheckCircle className="w-4 h-4 text-success-500" />;
-      case "processing":
-        return <Loader2 className="w-4 h-4 text-primary-500 animate-spin" />;
-      case "failed":
-        return <XCircle className="w-4 h-4 text-danger-500" />;
-      default:
-        return <Clock className="w-4 h-4 text-dark-400" />;
+  const handleAnalyze = async (videoId: string) => {
+    setAnalyzingId(videoId);
+    try {
+      await apiService.runInference(videoId);
+      fetchVideos();
+    } catch (error) {
+      console.error("Failed to analyze video:", error);
+    } finally {
+      setAnalyzingId(null);
     }
+  };
+
+  const getVideoStatus = (video: VideoWithPrediction) => {
+    if (video.prediction?.classification === "violence") return "violence";
+    if (video.prediction?.classification === "non-violence")
+      return "non-violence";
+    return "uploaded";
+  };
+
+  const filteredVideos = videos.filter((video) => {
+    if (filter === "all") return true;
+    return getVideoStatus(video) === filter;
+  });
+
+  const getStatusBadge = (video: VideoWithPrediction) => {
+    const status = getVideoStatus(video);
+
+    if (status === "violence") {
+      return (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-danger-500/10 text-danger-400 text-sm font-medium">
+          <ShieldAlert className="w-4 h-4" />
+          Violence
+        </div>
+      );
+    }
+
+    if (status === "non-violence") {
+      return (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-success-500/10 text-success-400 text-sm font-medium">
+          <Shield className="w-4 h-4" />
+          Non-Violence
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-dark-700 text-dark-400 text-sm font-medium">
+        <Clock className="w-4 h-4" />
+        Uploaded
+      </div>
+    );
   };
 
   return (
@@ -81,14 +145,40 @@ export default function VideosPage() {
         >
           <div>
             <h1 className="text-3xl font-bold text-white mb-2">Videos</h1>
-            <p className="text-dark-400">Manage your uploaded video files</p>
+            <p className="text-dark-400">
+              All uploaded videos with prediction status
+            </p>
           </div>
-          <Link href="/upload">
-            <button className="flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-all glow-primary">
-              <Video className="w-5 h-5" />
-              Upload New
-            </button>
-          </Link>
+
+          {/* Filter */}
+          <div className="flex items-center gap-2 p-1 bg-dark-800 rounded-xl">
+            <FilterButton
+              active={filter === "all"}
+              onClick={() => setFilter("all")}
+            >
+              All
+            </FilterButton>
+            <FilterButton
+              active={filter === "violence"}
+              onClick={() => setFilter("violence")}
+              color="danger"
+            >
+              Violence
+            </FilterButton>
+            <FilterButton
+              active={filter === "non-violence"}
+              onClick={() => setFilter("non-violence")}
+              color="success"
+            >
+              Non-Violence
+            </FilterButton>
+            <FilterButton
+              active={filter === "uploaded"}
+              onClick={() => setFilter("uploaded")}
+            >
+              Uploaded
+            </FilterButton>
+          </div>
         </motion.div>
 
         {/* Videos Grid */}
@@ -96,7 +186,7 @@ export default function VideosPage() {
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
           </div>
-        ) : videos.length === 0 ? (
+        ) : filteredVideos.length === 0 ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -104,10 +194,12 @@ export default function VideosPage() {
           >
             <FileVideo className="w-16 h-16 text-dark-500 mx-auto mb-4" />
             <h3 className="text-xl font-semibold text-white mb-2">
-              No Videos Yet
+              {filter === "all" ? "No Videos Yet" : `No ${filter} videos`}
             </h3>
             <p className="text-dark-400 mb-6">
-              Upload your first video to start analyzing content
+              {filter === "all"
+                ? "Upload your first video to start analyzing content"
+                : "No videos match this filter"}
             </p>
             <Link href="/upload">
               <button className="inline-flex items-center gap-2 px-6 py-3 bg-primary-500 hover:bg-primary-600 text-white rounded-xl font-medium transition-colors">
@@ -118,18 +210,43 @@ export default function VideosPage() {
           </motion.div>
         ) : (
           <div className="grid gap-4">
-            {videos.map((video, index) => (
+            {filteredVideos.map((video, index) => (
               <motion.div
                 key={video._id}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.05 }}
-                className="glass-card rounded-xl p-4 hover:border-primary-500/30 transition-all"
+                className={cn(
+                  "glass-card rounded-xl p-4 border-l-4 transition-all",
+                  getVideoStatus(video) === "violence"
+                    ? "border-l-danger-500"
+                    : getVideoStatus(video) === "non-violence"
+                      ? "border-l-success-500"
+                      : "border-l-dark-600",
+                )}
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
-                    <div className="w-16 h-16 rounded-xl bg-dark-800 flex items-center justify-center">
-                      <Video className="w-8 h-8 text-primary-400" />
+                    <div
+                      className={cn(
+                        "w-16 h-16 rounded-xl flex items-center justify-center",
+                        getVideoStatus(video) === "violence"
+                          ? "bg-danger-500/20"
+                          : getVideoStatus(video) === "non-violence"
+                            ? "bg-success-500/20"
+                            : "bg-dark-800",
+                      )}
+                    >
+                      <Video
+                        className={cn(
+                          "w-8 h-8",
+                          getVideoStatus(video) === "violence"
+                            ? "text-danger-400"
+                            : getVideoStatus(video) === "non-violence"
+                              ? "text-success-400"
+                              : "text-primary-400",
+                        )}
+                      />
                     </div>
                     <div>
                       <h3 className="font-medium text-white mb-1">
@@ -139,39 +256,46 @@ export default function VideosPage() {
                         <span>{formatBytes(video.size)}</span>
                         <span>•</span>
                         <span>{formatDate(video.uploadedAt)}</span>
+                        {video.prediction && (
+                          <>
+                            <span>•</span>
+                            <span
+                              className={cn(
+                                getVideoStatus(video) === "violence"
+                                  ? "text-danger-400"
+                                  : "text-success-400",
+                              )}
+                            >
+                              {formatPercentage(video.prediction.confidence)}{" "}
+                              confidence
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-4">
-                    <div
-                      className={cn(
-                        "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium",
-                        video.status === "completed"
-                          ? "bg-success-500/10 text-success-400"
-                          : video.status === "processing"
-                            ? "bg-primary-500/10 text-primary-400"
-                            : video.status === "failed"
-                              ? "bg-danger-500/10 text-danger-400"
-                              : "bg-dark-700 text-dark-400",
-                      )}
-                    >
-                      {getStatusIcon(video.status)}
-                      <span className="capitalize">{video.status}</span>
-                    </div>
+                    {getStatusBadge(video)}
 
                     <div className="flex items-center gap-2">
-                      <Link href={`/videos/${video._id}`}>
-                        <button className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
-                          <Play className="w-5 h-5 text-dark-400 hover:text-primary-400" />
+                      {getVideoStatus(video) === "uploaded" && (
+                        <button
+                          onClick={() => handleAnalyze(video._id)}
+                          disabled={analyzingId === video._id}
+                          className="flex items-center gap-2 px-3 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {analyzingId === video._id ? (
+                            <Loader2 className="w-4 h-4 text-white animate-spin" />
+                          ) : (
+                            <Brain className="w-4 h-4 text-white" />
+                          )}
+                          <span className="text-sm text-white font-medium">
+                            {analyzingId === video._id
+                              ? "Analyzing..."
+                              : "Predict"}
+                          </span>
                         </button>
-                      </Link>
-                      {video.status === "uploaded" && (
-                        <Link href={`/upload?videoId=${video._id}`}>
-                          <button className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
-                            <Brain className="w-5 h-5 text-dark-400 hover:text-primary-400" />
-                          </button>
-                        </Link>
                       )}
                       <button
                         onClick={() => handleDelete(video._id)}
@@ -211,5 +335,36 @@ export default function VideosPage() {
         )}
       </main>
     </div>
+  );
+}
+
+// Filter Button Component
+function FilterButton({
+  active,
+  onClick,
+  children,
+  color,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  color?: "danger" | "success";
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+        active
+          ? color === "danger"
+            ? "bg-danger-500/20 text-danger-400"
+            : color === "success"
+              ? "bg-success-500/20 text-success-400"
+              : "bg-primary-500/20 text-primary-400"
+          : "text-dark-400 hover:text-white hover:bg-dark-700",
+      )}
+    >
+      {children}
+    </button>
   );
 }

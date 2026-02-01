@@ -9,11 +9,14 @@ import {
   ArrowRight,
   CheckCircle,
   Upload,
+  ShieldAlert,
+  Shield,
 } from "lucide-react";
-import { Navbar, VideoUpload, PredictionResult } from "@/components";
+import { Navbar, VideoUpload } from "@/components";
 import { apiService } from "@/services/api";
 import { Prediction } from "@/types";
 import { useAppStore } from "@/hooks/useStore";
+import { cn, formatPercentage } from "@/lib/utils";
 
 export default function UploadPage() {
   const [uploadedVideoId, setUploadedVideoId] = useState<string | null>(null);
@@ -24,32 +27,11 @@ export default function UploadPage() {
 
   const { showNotification } = useAppStore();
 
-  const handleUploadComplete = async (videoId: string, fileName?: string) => {
+  const handleUploadComplete = (videoId: string, fileName?: string) => {
     setUploadedVideoId(videoId);
     setUploadedFileName(fileName || "video");
     setPrediction(null);
     setError(null);
-
-    // Automatically start analysis after upload
-    setIsAnalyzing(true);
-
-    try {
-      const response = await apiService.runInference(videoId);
-
-      if (response.success && response.data) {
-        setPrediction(response.data);
-        showNotification("success", "Analysis completed successfully!");
-      } else {
-        throw new Error(response.error || "Analysis failed");
-      }
-    } catch (err: any) {
-      const errorMessage =
-        err.response?.data?.error || err.message || "Analysis failed";
-      setError(errorMessage);
-      showNotification("error", errorMessage);
-    } finally {
-      setIsAnalyzing(false);
-    }
   };
 
   const handleAnalyze = async () => {
@@ -84,6 +66,8 @@ export default function UploadPage() {
     setError(null);
   };
 
+  const isViolent = prediction?.classification === "violence";
+
   return (
     <div className="min-h-screen">
       <Navbar />
@@ -95,13 +79,15 @@ export default function UploadPage() {
           animate={{ opacity: 1, y: 0 }}
           className="text-center mb-8"
         >
-          <h1 className="text-3xl font-bold text-white mb-2">Video Analysis</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">
+            Violence Detection
+          </h1>
           <p className="text-dark-400">
-            Upload a video file to detect violent content using AI
+            Upload a video and detect violent content using AI
           </p>
         </motion.div>
 
-        {/* Upload Section - Only show if no video uploaded yet */}
+        {/* Step 1: Upload Section */}
         {!uploadedVideoId && !prediction && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -113,28 +99,47 @@ export default function UploadPage() {
           </motion.div>
         )}
 
-        {/* Error State - Show after analysis fails */}
-        {uploadedVideoId && !prediction && !isAnalyzing && error && (
+        {/* Step 2: Video Uploaded - Show Predict Button */}
+        {uploadedVideoId && !prediction && !isAnalyzing && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
             className="glass-card rounded-2xl p-8 text-center mb-8"
           >
-            <div className="p-4 bg-danger-500/10 border border-danger-500/30 rounded-xl text-danger-400 mb-6">
-              {error}
+            {/* Success Upload Message */}
+            <div className="flex items-center justify-center gap-3 mb-6">
+              <div className="w-12 h-12 rounded-full bg-success-500/20 flex items-center justify-center">
+                <CheckCircle className="w-6 h-6 text-success-400" />
+              </div>
+              <div className="text-left">
+                <h3 className="text-lg font-semibold text-white">
+                  Video Uploaded Successfully!
+                </h3>
+                <p className="text-sm text-dark-400">{uploadedFileName}</p>
+              </div>
             </div>
 
-            {/* Retry Button */}
+            {error && (
+              <div className="p-4 bg-danger-500/10 border border-danger-500/30 rounded-xl text-danger-400 mb-6">
+                {error}
+              </div>
+            )}
+
+            {/* Predict Violence Button */}
             <button
               onClick={handleAnalyze}
               disabled={isAnalyzing}
               className="inline-flex items-center gap-3 px-10 py-5 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-bold text-lg shadow-lg glow-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed mb-4"
             >
               <Brain className="w-7 h-7" />
-              Retry Analysis
+              Predict Violence
               <ArrowRight className="w-6 h-6" />
             </button>
+
+            <p className="text-dark-500 text-sm mb-6">
+              Click to analyze this video for violent content
+            </p>
 
             {/* Upload Another Button */}
             <button
@@ -147,7 +152,7 @@ export default function UploadPage() {
           </motion.div>
         )}
 
-        {/* Analysis Processing Animation */}
+        {/* Analyzing Animation */}
         {isAnalyzing && (
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
@@ -161,12 +166,11 @@ export default function UploadPage() {
             </div>
 
             <h3 className="text-xl font-semibold text-white mb-2">
-              {uploadedFileName
-                ? `Analyzing: ${uploadedFileName}`
-                : "Analyzing Video Content"}
+              Predicting Violence...
             </h3>
-            <p className="text-dark-400 mb-6">
-              Our AI model is processing your video for violence detection...
+            <p className="text-dark-400 mb-2">{uploadedFileName}</p>
+            <p className="text-dark-500 mb-6">
+              AI model is analyzing video frames for violent content
             </p>
 
             <div className="flex justify-center gap-8 text-center">
@@ -190,22 +194,86 @@ export default function UploadPage() {
           </motion.div>
         )}
 
-        {/* Prediction Results */}
+        {/* Step 3: Prediction Result */}
         {prediction && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
           >
-            <PredictionResult prediction={prediction} />
-
-            <div className="text-center mt-8">
-              <button
-                onClick={handleReset}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-dark-700 hover:bg-dark-600 text-white rounded-xl font-medium transition-colors"
+            {/* Result Card */}
+            <div
+              className={cn(
+                "glass-card rounded-2xl p-8 text-center border-2",
+                isViolent ? "border-danger-500/50" : "border-success-500/50",
+              )}
+            >
+              {/* Result Icon */}
+              <div
+                className={cn(
+                  "w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6",
+                  isViolent ? "bg-danger-500/20" : "bg-success-500/20",
+                )}
               >
-                <Video className="w-5 h-5" />
-                Analyze Another Video
-              </button>
+                {isViolent ? (
+                  <ShieldAlert className="w-12 h-12 text-danger-400" />
+                ) : (
+                  <Shield className="w-12 h-12 text-success-400" />
+                )}
+              </div>
+
+              {/* Result Text */}
+              <h2
+                className={cn(
+                  "text-3xl font-bold mb-2",
+                  isViolent ? "text-danger-400" : "text-success-400",
+                )}
+              >
+                {isViolent ? "VIOLENCE DETECTED" : "NON-VIOLENT"}
+              </h2>
+
+              <p className="text-dark-400 mb-4">{uploadedFileName}</p>
+
+              {/* Confidence */}
+              <div className="mb-6">
+                <p className="text-sm text-dark-500 mb-2">Confidence</p>
+                <p
+                  className={cn(
+                    "text-4xl font-bold",
+                    isViolent ? "text-danger-400" : "text-success-400",
+                  )}
+                >
+                  {formatPercentage(prediction.confidence)}
+                </p>
+              </div>
+
+              {/* Probabilities */}
+              <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-8">
+                <div className="bg-danger-500/10 rounded-xl p-4">
+                  <p className="text-sm text-dark-400 mb-1">Violence</p>
+                  <p className="text-xl font-bold text-danger-400">
+                    {formatPercentage(prediction.probabilities?.violence || 0)}
+                  </p>
+                </div>
+                <div className="bg-success-500/10 rounded-xl p-4">
+                  <p className="text-sm text-dark-400 mb-1">Non-Violence</p>
+                  <p className="text-xl font-bold text-success-400">
+                    {formatPercentage(
+                      prediction.probabilities?.nonViolence || 0,
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <button
+                  onClick={handleReset}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-medium transition-colors"
+                >
+                  <Video className="w-5 h-5" />
+                  Analyze Another Video
+                </button>
+              </div>
             </div>
           </motion.div>
         )}

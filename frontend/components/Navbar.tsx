@@ -4,21 +4,13 @@ import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import {
-  Shield,
-  Upload,
-  BarChart3,
-  Video,
-  Brain,
-  Activity,
-} from "lucide-react";
+import { Shield, Upload, BarChart3, Video, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: BarChart3 },
   { name: "Upload", href: "/upload", icon: Upload },
   { name: "Videos", href: "/videos", icon: Video },
-  { name: "Predictions", href: "/predictions", icon: Brain },
 ];
 
 export default function Navbar() {
