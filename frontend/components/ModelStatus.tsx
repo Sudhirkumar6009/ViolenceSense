@@ -12,7 +12,7 @@ import {
   BarChart2,
   HardDrive,
 } from "lucide-react";
-import { cn, formatPercentage } from "@/lib/utils";
+import { cn, formatPercentage } from "../lib/utils";
 import { ModelStatusResponse, ModelMetricsResponse } from "@/types";
 
 interface ModelStatusProps {

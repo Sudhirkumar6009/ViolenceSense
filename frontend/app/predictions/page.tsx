@@ -17,7 +17,7 @@ import {
 import { Navbar } from "@/components";
 import { apiService } from "@/services/api";
 import { Prediction, Video } from "@/types";
-import { cn, formatPercentage, formatDate } from "@/lib/utils";
+import { cn, formatPercentage, formatDate } from "../../lib/utils";
 
 export default function PredictionsPage() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);

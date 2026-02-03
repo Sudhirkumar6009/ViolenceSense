@@ -19,7 +19,7 @@ import {
 import { Navbar } from "@/components";
 import { apiService } from "@/services/api";
 import { Video as VideoType, Prediction } from "@/types";
-import { cn, formatBytes, formatDate, formatPercentage } from "@/lib/utils";
+import { cn, formatBytes, formatDate, formatPercentage } from "../../lib/utils";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";

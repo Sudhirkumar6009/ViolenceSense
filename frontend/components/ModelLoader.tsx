@@ -11,7 +11,7 @@ import {
   Settings,
   Zap,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn } from "../lib/utils";
 import { apiService } from "@/services/api";
 import { useAppStore } from "@/hooks/useStore";
 

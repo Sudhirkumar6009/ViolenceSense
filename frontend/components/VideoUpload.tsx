@@ -12,7 +12,7 @@ import {
   Loader2,
   FileVideo,
 } from "lucide-react";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn, formatBytes } from "../lib/utils";
 import { apiService } from "@/services/api";
 import { useAppStore } from "@/hooks/useStore";
 
