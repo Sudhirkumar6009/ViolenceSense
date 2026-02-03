@@ -12,7 +12,7 @@ import {
   BarChart2,
   TrendingUp,
 } from "lucide-react";
-import { cn, formatPercentage } from "../lib/utils";
+import { cn, formatPercentage } from "@/lib/utils";
 import { Prediction } from "@/types";
 
 interface PredictionResultProps {

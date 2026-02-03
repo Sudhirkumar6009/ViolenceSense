@@ -19,7 +19,7 @@ import Link from "next/link";
 import { Navbar } from "@/components";
 import { apiService } from "@/services/api";
 import { PredictionStats, ModelStatusResponse, HealthResponse } from "@/types";
-import { cn, formatPercentage } from "../lib/utils";
+import { cn, formatPercentage } from "@/lib/utils";
 
 export default function HomePage() {
   const [stats, setStats] = useState<PredictionStats | null>(null);

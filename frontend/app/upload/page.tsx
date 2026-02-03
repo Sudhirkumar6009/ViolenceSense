@@ -16,7 +16,7 @@ import { Navbar, VideoUpload } from "@/components";
 import { apiService } from "@/services/api";
 import { Prediction } from "@/types";
 import { useAppStore } from "@/hooks/useStore";
-import { cn, formatPercentage } from "../../lib/utils";
+import { cn, formatPercentage } from "@/lib/utils";
 
 export default function UploadPage() {
   const [uploadedVideoId, setUploadedVideoId] = useState<string | null>(null);
