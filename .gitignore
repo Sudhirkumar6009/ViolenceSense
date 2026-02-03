@@ -175,8 +175,8 @@ uploads/
 *.mov
 *.mkv
 
-# Model files
-models/
+# Model files (only root models/ folder, not src/models/)
+/models/
 *.pth
 *.pt
 *.onnx
