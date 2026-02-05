@@ -53,9 +53,35 @@ class Server {
     );
 
     // CORS configuration
+    const corsOrigins = config.cors.origin.split(",").map((o) => o.trim());
     this.app.use(
       cors({
-        origin: config.nodeEnv === "development" ? "*" : config.cors.origin,
+        origin: (origin, callback) => {
+          // Allow requests with no origin (like mobile apps, curl, etc.)
+          if (!origin) return callback(null, true);
+
+          // In development, allow all origins
+          if (config.nodeEnv === "development") {
+            return callback(null, true);
+          }
+
+          // Check if the origin is in the allowed list
+          if (
+            corsOrigins.includes("*") ||
+            corsOrigins.includes(origin) ||
+            corsOrigins.some((o) => origin.endsWith(o.replace("*", "")))
+          ) {
+            return callback(null, true);
+          }
+
+          // Also allow Vercel preview deployments
+          if (origin.includes(".vercel.app")) {
+            return callback(null, true);
+          }
+
+          logger.warn(`CORS blocked origin: ${origin}`);
+          callback(new Error("Not allowed by CORS"));
+        },
         methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization", "Range"],
         exposedHeaders: [
@@ -64,7 +90,7 @@ class Server {
           "Content-Length",
           "Content-Type",
         ],
-        credentials: config.nodeEnv !== "development",
+        credentials: true,
       }),
     );
 

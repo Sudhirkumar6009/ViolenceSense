@@ -116,13 +116,27 @@ export default function HomePage() {
           <StatusCard
             icon={Cpu}
             label="Model Status"
-            status={modelStatus?.hasActiveModel ? "Loaded" : "Not Loaded"}
-            isHealthy={modelStatus?.hasActiveModel}
+            status={
+              modelStatus?.mlService?.isLoaded
+                ? "Loaded"
+                : modelStatus?.hasActiveModel
+                  ? "Configured"
+                  : "Not Loaded"
+            }
+            isHealthy={
+              modelStatus?.mlService?.isLoaded || modelStatus?.hasActiveModel
+            }
           />
           <StatusCard
             icon={Brain}
             label="ML Service"
-            status={modelStatus?.mlService?.isLoaded ? "Ready" : "Standby"}
+            status={
+              modelStatus?.mlService?.isLoaded
+                ? "Ready"
+                : health?.status === "healthy"
+                  ? "Standby"
+                  : "Offline"
+            }
             isHealthy={modelStatus?.mlService?.isLoaded}
           />
         </div>
