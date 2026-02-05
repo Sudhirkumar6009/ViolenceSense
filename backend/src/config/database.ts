@@ -23,8 +23,12 @@ class Database {
     }
 
     try {
+      // Extract DB name from URI for logging (do NOT override with dbName option)
+      const uriDbName =
+        config.mongodb.uri.split("/").pop()?.split("?")[0] || "unknown";
+
       const options: mongoose.ConnectOptions = {
-        dbName: config.mongodb.dbName,
+        // Do NOT set dbName here - let the URI control it to avoid case mismatch
         maxPoolSize: 10,
         serverSelectionTimeoutMS: 10000,
         socketTimeoutMS: 45000,
@@ -33,14 +37,12 @@ class Database {
       };
 
       logger.info(`Connecting to MongoDB Atlas...`);
-      logger.info(`Database: ${config.mongodb.dbName}`);
+      logger.info(`Database (from URI): ${uriDbName}`);
 
       await mongoose.connect(config.mongodb.uri, options);
 
       this.isConnected = true;
-      logger.info(
-        `✅ MongoDB Atlas connected successfully to ${config.mongodb.dbName}`,
-      );
+      logger.info(`✅ MongoDB Atlas connected successfully to ${uriDbName}`);
 
       // Initialize GridFS for video storage
       initGridFS();

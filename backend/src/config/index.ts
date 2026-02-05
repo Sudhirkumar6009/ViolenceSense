@@ -45,8 +45,8 @@ const config: IConfig = {
   port: parseInt(process.env.PORT || "5000", 10),
 
   mongodb: {
-    uri: process.env.MONGODB_URI || "mongodb://localhost:27017/violencesense",
-    dbName: process.env.MONGODB_DB_NAME || "violencesense",
+    uri: process.env.MONGODB_URI || "mongodb://localhost:27017/ViolenceSense",
+    dbName: process.env.MONGODB_DB_NAME || "ViolenceSense",
   },
 
   mlService: {
