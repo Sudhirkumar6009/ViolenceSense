@@ -5,6 +5,7 @@ import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import fs from "fs";
+import passport from "passport";
 
 import config from "./config";
 import database from "./config/database";
@@ -13,6 +14,7 @@ import { errorHandler, notFoundHandler } from "./middleware";
 import logger from "./utils/logger";
 import mlService from "./services/mlService";
 import ModelConfig from "./models/modelConfig";
+import "./config/passport"; // Initialize passport strategies
 
 class Server {
   private app: Express;
@@ -108,6 +110,9 @@ class Server {
     // Body parsing
     this.app.use(express.json({ limit: "10mb" }));
     this.app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+    // Initialize Passport
+    this.app.use(passport.initialize());
 
     // Request logging
     if (config.nodeEnv === "development") {

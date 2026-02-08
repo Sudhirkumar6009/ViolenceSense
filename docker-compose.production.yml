@@ -1,0 +1,220 @@
+version: "3.8"
+
+# ViolenceSense - Real-Time Violence Detection System
+# ====================================================
+# Complete Docker Compose deployment with PostgreSQL, RTSP service,
+# ML service, Backend, and Frontend.
+
+services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: violencesense-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: violencesense
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init_schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d violencesense"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # MongoDB Database (Legacy - for video storage)
+  # ============================================
+  mongodb:
+    image: mongo:7.0
+    container_name: violencesense-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: violencesense
+    volumes:
+      - mongodb_data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # ML Service (Python FastAPI)
+  # ============================================
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: violencesense-ml
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MODEL_PATH=/app/models
+      - LOG_LEVEL=info
+      - USE_GPU=false
+    volumes:
+      - ./ml-service/models:/app/models:ro
+      - ml_cache:/app/.cache
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # ============================================
+  # RTSP Stream Service (Python FastAPI)
+  # ============================================
+  rtsp-service:
+    build:
+      context: ./rtsp-service
+      dockerfile: Dockerfile
+    container_name: violencesense-rtsp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HOST=0.0.0.0
+      - PORT=8080
+      - ML_SERVICE_URL=http://ml-service:8000
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/violencesense
+      - BACKEND_URL=http://backend:5000
+      - VIOLENCE_THRESHOLD=0.65
+      - MIN_CONSECUTIVE_FRAMES=5
+      - CLIP_DURATION_BEFORE=5
+      - CLIP_DURATION_AFTER=10
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./rtsp-service/clips:/app/clips
+      - ./rtsp-service/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # Backend Service (Node.js Express)
+  # ============================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: violencesense-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/violencesense?authSource=admin
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/violencesense
+      - ML_SERVICE_URL=http://ml-service:8000
+      - RTSP_SERVICE_URL=http://rtsp-service:8080
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - CORS_ORIGIN=http://localhost:3000,http://frontend:3000
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/logs:/app/logs
+      - ./rtsp-service/clips:/app/clips:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # Frontend Service (Next.js)
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: violencesense-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1
+      - NEXT_PUBLIC_RTSP_SERVICE_URL=http://localhost:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - violencesense-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # MediaMTX - RTSP Simple Server (for webcam testing)
+  # ============================================
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: violencesense-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554" # RTSP
+      - "1935:1935" # RTMP
+      - "8888:8888" # HLS
+      - "8889:8889" # WebRTC
+    networks:
+      - violencesense-network
+    profiles:
+      - testing
+
+networks:
+  violencesense-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongodb_data:
+  ml_cache:

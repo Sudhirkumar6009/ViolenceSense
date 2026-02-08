@@ -187,6 +187,23 @@ class MLServiceClient {
         return await this.runInferenceWithUpload(request);
       }
 
+      // Verify file exists before sending to ML service
+      if (!fs.existsSync(request.videoPath)) {
+        logger.error(`Video file does not exist: ${request.videoPath}`);
+        return {
+          success: false,
+          classification: "non-violence",
+          confidence: 0,
+          probabilities: { violence: 0, nonViolence: 0 },
+          metrics: { inferenceTime: 0, framesProcessed: 0 },
+          error: `Video file not found: ${request.videoPath}`,
+        };
+      }
+
+      logger.info(
+        `Sending inference request to ML service: ${request.videoPath}`,
+      );
+
       // Use path-based inference for local services
       const response = await this.client.post<InferenceResponse>(
         "/inference/predict",
@@ -194,7 +211,15 @@ class MLServiceClient {
       );
       return response.data;
     } catch (error: any) {
-      logger.error("Inference failed:", error.message);
+      // Capture detailed error from ML service response
+      const mlServiceError =
+        error.response?.data?.detail ||
+        error.response?.data?.error ||
+        error.message;
+      logger.error(`Inference failed: ${mlServiceError}`);
+      logger.error(
+        `Full error details: ${JSON.stringify(error.response?.data)}`,
+      );
       return {
         success: false,
         classification: "non-violence",
@@ -207,7 +232,7 @@ class MLServiceClient {
           inferenceTime: 0,
           framesProcessed: 0,
         },
-        error: error.message,
+        error: mlServiceError,
       };
     }
   }

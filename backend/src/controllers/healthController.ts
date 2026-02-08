@@ -3,14 +3,24 @@ import mongoose from "mongoose";
 import { mlService } from "../services";
 import config from "../config";
 import logger from "../utils/logger";
+import database from "../config/database";
 
 class HealthController {
-  // GET /api/v1/health - API health check
+  // GET /api/v1/health - API health check with detailed database status
   async checkHealth(req: Request, res: Response): Promise<void> {
     try {
+      // MongoDB health check
+      const mongoHealth = await database.healthCheck();
       const mongoStatus =
-        mongoose.connection.readyState === 1 ? "connected" : "disconnected";
+        mongoHealth.status === "healthy" ? "connected" : "disconnected";
+
+      // ML Service health check
       const mlServiceStatus = await mlService.healthCheck();
+
+      // Check if using local or remote MongoDB
+      const isLocalMongo =
+        config.mongodb.uri.includes("localhost") ||
+        config.mongodb.uri.includes("127.0.0.1");
 
       const isHealthy = mongoStatus === "connected";
 
@@ -28,11 +38,17 @@ class HealthController {
             },
             mongodb: {
               status: mongoStatus,
-              host: config.mongodb.uri.split("@")[1] || "localhost",
+              type: isLocalMongo ? "LOCAL" : "REMOTE",
+              latency: `${mongoHealth.latency}ms`,
+              host: mongoHealth.details?.host || "unknown",
+              database: mongoHealth.details?.name || config.mongodb.dbName,
             },
             mlService: {
               status: mlServiceStatus ? "connected" : "disconnected",
               url: config.mlService.url,
+            },
+            rtspService: {
+              url: config.rtspService.url,
             },
           },
           memory: {

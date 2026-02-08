@@ -170,7 +170,10 @@ export default function PredictionsPage() {
                                 : "text-success-400",
                             )}
                           >
-                            {prediction.classification.replace("-", " ")}
+                            {(prediction.classification ?? "unknown").replace(
+                              "-",
+                              " ",
+                            )}
                           </span>
                           <span
                             className={cn(
@@ -185,8 +188,10 @@ export default function PredictionsPage() {
                         </div>
                         <div className="flex items-center gap-4 text-sm text-dark-400">
                           <span className="truncate max-w-xs">
-                            {typeof video === "object"
-                              ? video.originalName
+                            {video && typeof video === "object"
+                              ? (video.originalName ??
+                                video.filename ??
+                                "Unknown video")
                               : "Unknown video"}
                           </span>
                           <span className="flex items-center gap-1">
@@ -204,7 +209,8 @@ export default function PredictionsPage() {
                           <span className="text-danger-400">
                             V:{" "}
                             {formatPercentage(
-                              prediction.probabilities.violence,
+                              (prediction.probabilities ?? "undefined")
+                                .violence,
                             )}
                           </span>
                           <span className="text-success-400">

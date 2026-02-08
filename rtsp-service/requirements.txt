@@ -1,0 +1,51 @@
+# RTSP Live Stream Service - Dependencies
+# ==========================================
+# GPU-OPTIMIZED VERSION FOR REAL-TIME PERFORMANCE
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Video Processing
+opencv-python==4.9.0.80
+numpy==1.26.3
+av==11.0.0  # PyAV for FFmpeg bindings
+
+# ML Inference with GPU Support
+# Use tensorflow[and-cuda] for GPU support on Linux
+# On Windows, install tensorflow and CUDA Toolkit separately
+tensorflow==2.15.0
+keras==3.0.0
+
+# For TensorRT optimization (optional, uncomment if using TensorRT)
+# tensorrt
+
+# Database
+sqlalchemy==2.0.25
+aiosqlite==0.19.0
+asyncpg==0.29.0  # PostgreSQL async driver
+greenlet==3.0.3  # Required for SQLAlchemy async
+
+# Async utilities
+aiofiles==23.2.1
+aiohttp==3.9.1
+
+# Configuration
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# WebSocket for real-time updates
+websockets==12.0
+
+# Scheduling
+apscheduler==3.10.4
+
+# Logging
+loguru==0.7.2
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+httpx==0.26.0

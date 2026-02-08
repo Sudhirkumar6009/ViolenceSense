@@ -168,6 +168,10 @@ jspm_packages/
 .env.production.local
 .env*.local
 
+# Google OAuth credentials
+client_secret*.json
+**/client_secret*.json
+
 # Uploaded files
 uploads/
 *.mp4

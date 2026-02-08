@@ -1,0 +1,334 @@
+/**
+ * ViolenceSense - Stream & Event API Services
+ * ============================================
+ * API services for RTSP streams and violence events.
+ */
+
+import axios, { AxiosInstance } from "axios";
+import {
+  ApiResponse,
+  Stream,
+  StreamCreateRequest,
+  StreamStats,
+  ViolenceEvent,
+  EventUpdateRequest,
+  EventFilters,
+  EventStats,
+} from "@/types";
+
+const RTSP_SERVICE_URL =
+  process.env.NEXT_PUBLIC_RTSP_SERVICE_URL || "http://localhost:8080";
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
+
+// ============================================
+// RTSP Stream Service
+// ============================================
+
+class StreamService {
+  private client: AxiosInstance;
+
+  constructor() {
+    this.client = axios.create({
+      baseURL: `${RTSP_SERVICE_URL}/api/v1`,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        console.error(
+          "RTSP Service Error:",
+          error.response?.data || error.message,
+        );
+        return Promise.reject(error);
+      },
+    );
+  }
+
+  // Health check
+  async getHealth(): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.client.get("/health");
+      return { success: true, data: response.data };
+    } catch (error) {
+      return { success: false, error: "RTSP service unavailable" };
+    }
+  }
+
+  // List all streams
+  async getStreams(): Promise<ApiResponse<Stream[]>> {
+    try {
+      const response = await this.client.get("/streams");
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  // Get single stream
+  async getStream(id: string): Promise<ApiResponse<Stream>> {
+    const response = await this.client.get(`/streams/${id}`);
+    return response.data;
+  }
+
+  // Create new stream
+  async createStream(data: StreamCreateRequest): Promise<ApiResponse<Stream>> {
+    // Transform frontend field names to backend expected format
+    const payload = {
+      name: data.name,
+      url: data.rtsp_url || data.url, // Backend expects 'url' not 'rtsp_url'
+      stream_type: data.stream_type || "rtsp",
+      location: data.location,
+      auto_start: data.auto_start ?? false,
+      custom_threshold: data.custom_threshold,
+    };
+    const response = await this.client.post("/streams", payload);
+    return response.data;
+  }
+
+  // Update stream
+  async updateStream(
+    id: string,
+    data: Partial<StreamCreateRequest>,
+  ): Promise<ApiResponse<Stream>> {
+    // Transform frontend field names to backend expected format
+    const payload: Record<string, any> = {};
+    if (data.name) payload.name = data.name;
+    if (data.rtsp_url || data.url) payload.url = data.rtsp_url || data.url;
+    if (data.stream_type) payload.stream_type = data.stream_type;
+    if (data.location !== undefined) payload.location = data.location;
+    if (data.custom_threshold !== undefined)
+      payload.custom_threshold = data.custom_threshold;
+
+    const response = await this.client.patch(`/streams/${id}`, payload);
+    return response.data;
+  }
+
+  // Delete stream
+  async deleteStream(id: string): Promise<ApiResponse<void>> {
+    const response = await this.client.delete(`/streams/${id}`);
+    return response.data;
+  }
+
+  // Start stream
+  async startStream(id: string): Promise<ApiResponse<any>> {
+    const response = await this.client.post(`/streams/${id}/start`);
+    return response.data;
+  }
+
+  // Stop stream
+  async stopStream(id: string): Promise<ApiResponse<any>> {
+    const response = await this.client.post(`/streams/${id}/stop`);
+    return response.data;
+  }
+
+  // Get stream status
+  async getStreamStatus(id: string): Promise<ApiResponse<StreamStats>> {
+    const response = await this.client.get(`/streams/${id}/status`);
+    return response.data;
+  }
+
+  // Get all stream statuses
+  async getAllStreamStatuses(): Promise<ApiResponse<StreamStats[]>> {
+    try {
+      const response = await this.client.get("/streams/status");
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  // Get current inference scores
+  async getCurrentScores(): Promise<ApiResponse<any[]>> {
+    try {
+      const response = await this.client.get("/inference/scores");
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  // Get violence events from RTSP service (PostgreSQL)
+  async getEvents(filters?: {
+    status?: string;
+    stream_id?: number;
+    limit?: number;
+    offset?: number;
+  }): Promise<{
+    success: boolean;
+    data: ViolenceEvent[];
+    pagination?: { limit: number; offset: number; count: number };
+  }> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append("status", filters.status);
+      if (filters?.stream_id)
+        params.append("stream_id", filters.stream_id.toString());
+      if (filters?.limit) params.append("limit", filters.limit.toString());
+      if (filters?.offset) params.append("offset", filters.offset.toString());
+
+      const response = await this.client.get(`/events?${params.toString()}`);
+      return response.data;
+    } catch (error: any) {
+      return { success: false, data: [] };
+    }
+  }
+
+  // Get clip URL (served from RTSP service)
+  getClipUrl(clipFilename: string): string {
+    return `${RTSP_SERVICE_URL}/api/v1/clips/${clipFilename}`;
+  }
+
+  // Get thumbnail URL (served from RTSP service)
+  getThumbnailUrl(thumbnailFilename: string): string {
+    return `${RTSP_SERVICE_URL}/api/v1/thumbnails/${thumbnailFilename}`;
+  }
+}
+
+// ============================================
+// Event Service (Backend)
+// ============================================
+
+class EventService {
+  private client: AxiosInstance;
+
+  constructor() {
+    this.client = axios.create({
+      baseURL: BACKEND_URL,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        console.error(
+          "Event Service Error:",
+          error.response?.data || error.message,
+        );
+        return Promise.reject(error);
+      },
+    );
+  }
+
+  // Get events with filters
+  async getEvents(filters?: EventFilters): Promise<{
+    success: boolean;
+    data: ViolenceEvent[];
+    pagination?: {
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+    };
+  }> {
+    try {
+      const params = new URLSearchParams();
+      if (filters?.status) params.append("status", filters.status);
+      if (filters?.severity) params.append("severity", filters.severity);
+      if (filters?.stream_id) params.append("stream_id", filters.stream_id);
+      if (filters?.start_after)
+        params.append("start_after", filters.start_after);
+      if (filters?.start_before)
+        params.append("start_before", filters.start_before);
+      if (filters?.limit) params.append("limit", filters.limit.toString());
+      if (filters?.offset) params.append("offset", filters.offset.toString());
+
+      const response = await this.client.get(`/events?${params.toString()}`);
+      return response.data;
+    } catch (error: any) {
+      return { success: false, data: [] };
+    }
+  }
+
+  // Get pending events
+  async getPendingEvents(
+    limit: number = 20,
+  ): Promise<ApiResponse<ViolenceEvent[]>> {
+    try {
+      const response = await this.client.get(`/events/pending?limit=${limit}`);
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  // Get single event
+  async getEvent(id: string): Promise<ApiResponse<ViolenceEvent>> {
+    const response = await this.client.get(`/events/${id}`);
+    return response.data;
+  }
+
+  // Update event status
+  async updateEventStatus(
+    id: string,
+    data: EventUpdateRequest,
+  ): Promise<ApiResponse<ViolenceEvent>> {
+    const response = await this.client.patch(`/events/${id}/status`, data);
+    return response.data;
+  }
+
+  // Get event statistics
+  async getEventStats(days: number = 7): Promise<ApiResponse<EventStats>> {
+    try {
+      const response = await this.client.get(`/events/stats?days=${days}`);
+      return response.data;
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.message,
+        data: {
+          period_days: days,
+          total_events: 0,
+          by_status: {},
+          by_severity: {},
+          daily_breakdown: [],
+          top_streams: [],
+        },
+      };
+    }
+  }
+
+  // Get streams from backend (PostgreSQL)
+  async getStreams(): Promise<ApiResponse<Stream[]>> {
+    try {
+      const response = await this.client.get("/streams");
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message, data: [] };
+    }
+  }
+
+  // Get stream events
+  async getStreamEvents(
+    streamId: string,
+    limit: number = 50,
+    status?: string,
+  ): Promise<ApiResponse<ViolenceEvent[]>> {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (status) params.append("status", status);
+
+    const response = await this.client.get(
+      `/streams/${streamId}/events?${params.toString()}`,
+    );
+    return response.data;
+  }
+
+  // Get clip URL (served from RTSP service)
+  getClipUrl(clipFilename: string): string {
+    return `${RTSP_SERVICE_URL}/api/v1/clips/${clipFilename}`;
+  }
+
+  // Get thumbnail URL (served from RTSP service)
+  getThumbnailUrl(thumbnailFilename: string): string {
+    return `${RTSP_SERVICE_URL}/api/v1/thumbnails/${thumbnailFilename}`;
+  }
+}
+
+// Export service instances
+export const streamService = new StreamService();
+export const eventService = new EventService();

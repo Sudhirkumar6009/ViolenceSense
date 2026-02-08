@@ -2,7 +2,7 @@
 export interface Video {
   _id: string;
   filename: string;
-  originalName: string;
+  originalName: string | null;
   path: string;
   size: number;
   mimetype: string;
@@ -207,4 +207,222 @@ export interface ModelLoadRequest {
   architecture?: string;
   name?: string;
   description?: string;
+}
+
+// ============================================
+// RTSP Stream Types
+// ============================================
+
+export interface Stream {
+  id: string;
+  name: string;
+  url: string;
+  rtsp_url: string; // Alias for url
+  stream_type: "rtsp" | "rtmp" | "webcam" | "file";
+  type?: string; // Backend sends 'type' as well
+  location?: string;
+  is_active: boolean;
+  is_running?: boolean;
+  is_connected?: boolean;
+  inference_enabled?: boolean;
+  status:
+    | "online"
+    | "offline"
+    | "error"
+    | "connecting"
+    | "running"
+    | "stopped"
+    | "starting"
+    | "stopping";
+  last_frame_at?: string;
+  last_frame_time?: string; // Backend alias
+  error_message?: string;
+  custom_threshold?: number;
+  custom_window_seconds?: number;
+  frame_count?: number;
+  buffer_size?: number;
+  reconnect_attempts?: number;
+  created_at?: string;
+  updated_at?: string;
+  pending_events?: number;
+}
+
+export interface StreamCreateRequest {
+  name: string;
+  url?: string;
+  rtsp_url?: string;
+  stream_type?: "rtsp" | "rtmp" | "webcam" | "file";
+  location?: string;
+  auto_start?: boolean;
+  inference_enabled?: boolean;
+  custom_threshold?: number;
+}
+
+export interface StreamStats {
+  stream_id: string;
+  is_running: boolean;
+  is_connected: boolean;
+  frame_count: number;
+  last_frame_time?: string;
+  ingestion: {
+    status: string;
+    frame_count: number;
+    buffer_size: number;
+  };
+  detector: {
+    phase: string;
+    total_events: number;
+    current_event_id?: string;
+  };
+}
+
+// ============================================
+// Violence Event Types
+// ============================================
+
+export type EventSeverity = "low" | "medium" | "high" | "critical";
+export type EventStatus =
+  | "new"
+  | "pending"
+  | "confirmed"
+  | "dismissed"
+  | "reviewed"
+  | "auto_dismissed";
+
+export interface ViolenceEvent {
+  id: string;
+  stream_id: string;
+  stream_name?: string;
+  stream_location?: string;
+  start_time?: string;
+  started_at: string; // Alias for start_time
+  end_time?: string;
+  ended_at?: string; // Alias for end_time
+  duration_seconds?: number;
+  max_confidence?: number;
+  max_score: number; // Alias for max_confidence
+  avg_confidence?: number;
+  avg_score?: number; // Alias for avg_confidence
+  min_confidence?: number;
+  frame_count?: number;
+  severity: EventSeverity;
+  status: EventStatus;
+  clip_path?: string;
+  clip_duration?: number;
+  thumbnail_path?: string;
+  reviewed_at?: string;
+  reviewed_by?: string;
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EventUpdateRequest {
+  status: "confirmed" | "dismissed";
+  reviewed_by?: string;
+  notes?: string;
+}
+
+export interface EventFilters {
+  status?: EventStatus;
+  severity?: EventSeverity;
+  stream_id?: string;
+  start_after?: string;
+  start_before?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface EventStats {
+  period_days: number;
+  total_events: number;
+  by_status: Record<string, number>;
+  by_severity: Record<string, number>;
+  daily_breakdown: Array<{
+    date: string;
+    total: number;
+    confirmed: number;
+    avg_confidence: number;
+  }>;
+  top_streams: Array<{
+    stream_name: string;
+    event_count: number;
+    max_confidence: number;
+  }>;
+}
+
+// ============================================
+// Real-time WebSocket Types
+// ============================================
+
+export type WebSocketMessageType =
+  | "inference_score"
+  | "event_start"
+  | "event_started"
+  | "event_end"
+  | "event_ended"
+  | "violence_alert"
+  | "alert"
+  | "ping"
+  | "pong"
+  | "stream_status"
+  | "stream_started"
+  | "stream_stopped";
+
+export interface WebSocketMessage {
+  type: WebSocketMessageType;
+  data: any;
+  timestamp?: string;
+}
+
+export interface InferenceScoreMessage {
+  stream_id: string;
+  stream_name: string;
+  violence_score: number;
+  non_violence_score: number;
+  is_violent: boolean;
+  timestamp: string;
+  fps?: number;
+}
+
+export interface AlertMessage {
+  type?: "event_start" | "event_end" | "alert" | "violence_alert";
+  event_id: string;
+  stream_id: string;
+  stream_name: string;
+  start_time?: string;
+  timestamp: string;
+  confidence?: number;
+  max_score: number;
+  max_confidence?: number;
+  avg_confidence?: number;
+  severity?: EventSeverity;
+  message?: string;
+  clip_path?: string;
+  thumbnail_path?: string;
+  clip_duration?: number;
+  duration?: number;
+}
+
+// ============================================
+// Dashboard Types
+// ============================================
+
+export interface DashboardStats {
+  streams: {
+    total: number;
+    online: number;
+    offline: number;
+    error: number;
+  };
+  events: {
+    pending: number;
+    confirmed_today: number;
+    total_today: number;
+  };
+  system: {
+    ml_service_status: "online" | "offline";
+    rtsp_service_status: "online" | "offline";
+    backend_status: "online" | "offline";
+  };
 }

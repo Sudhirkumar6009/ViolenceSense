@@ -1,0 +1,350 @@
+"use client";
+
+import React, { useEffect, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Shield,
+  Video,
+  Brain,
+  Activity,
+  Cpu,
+  TrendingUp,
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  BarChart3,
+  ArrowRight,
+} from "lucide-react";
+import Link from "next/link";
+import { Navbar } from "@/components";
+import { apiService } from "@/services/api";
+import { PredictionStats, ModelStatusResponse, HealthResponse } from "@/types";
+import { cn, formatPercentage } from "@/lib/utils";
+
+export default function HomePage() {
+  const [stats, setStats] = useState<PredictionStats | null>(null);
+  const [modelStatus, setModelStatus] = useState<ModelStatusResponse | null>(
+    null,
+  );
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [statsRes, modelRes, healthRes] = await Promise.all([
+          apiService.getPredictionStats(),
+          apiService.getModelStatus(),
+          apiService.getHealth(),
+        ]);
+
+        if (statsRes.success) setStats(statsRes.data!);
+        if (modelRes.success) setModelStatus(modelRes.data!);
+        if (healthRes.success) setHealth(healthRes.data!);
+      } catch (error) {
+        console.error("Failed to fetch dashboard data:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  return (
+    <div className="min-h-screen">
+      <Navbar />
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Hero Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center mb-12"
+        >
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: "spring", stiffness: 260, damping: 20 }}
+            className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-primary-600 shadow-xl glow-primary mb-6"
+          >
+            <Shield className="w-10 h-10 text-white" />
+          </motion.div>
+
+          <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
+            <span className="text-gradient">ViolenceSense</span>
+          </h1>
+          <p className="text-xl text-dark-400 max-w-2xl mx-auto mb-8">
+            AI-powered video violence detection using state-of-the-art deep
+            learning models. Upload, analyze, and classify video content in
+            seconds.
+          </p>
+
+          <div className="flex items-center justify-center gap-4">
+            <Link href="/upload">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="flex items-center gap-2 px-8 py-4 bg-primary-600 hover:bg-primary-700 text-white rounded-xl font-semibold shadow-lg glow-primary transition-all"
+              >
+                <Video className="w-5 h-5" />
+                Analyze Video
+                <ArrowRight className="w-5 h-5" />
+              </motion.button>
+            </Link>
+            <Link href="/predictions">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="flex items-center gap-2 px-8 py-4 bg-dark-800 hover:bg-dark-700 text-white rounded-xl font-semibold border border-dark-600 transition-all"
+              >
+                <Brain className="w-5 h-5" />
+                View Results
+              </motion.button>
+            </Link>
+          </div>
+        </motion.div>
+
+        {/* System Status */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <StatusCard
+            icon={Activity}
+            label="API Status"
+            status={health?.status === "healthy" ? "Online" : "Offline"}
+            isHealthy={health?.status === "healthy"}
+          />
+          <StatusCard
+            icon={Cpu}
+            label="Model Status"
+            status={
+              modelStatus?.mlService?.isLoaded
+                ? "Loaded"
+                : modelStatus?.hasActiveModel
+                  ? "Configured"
+                  : "Not Loaded"
+            }
+            isHealthy={
+              modelStatus?.mlService?.isLoaded || modelStatus?.hasActiveModel
+            }
+          />
+          <StatusCard
+            icon={Brain}
+            label="ML Service"
+            status={
+              modelStatus?.mlService?.isLoaded
+                ? "Ready"
+                : health?.status === "healthy"
+                  ? "Standby"
+                  : "Offline"
+            }
+            isHealthy={modelStatus?.mlService?.isLoaded}
+          />
+        </div>
+
+        {/* Statistics Grid */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"
+        >
+          <StatCard
+            icon={BarChart3}
+            label="Total Analyses"
+            value={stats?.total || 0}
+            color="primary"
+          />
+          <StatCard
+            icon={AlertTriangle}
+            label="Violence Detected"
+            value={stats?.violent || 0}
+            color="danger"
+          />
+          <StatCard
+            icon={CheckCircle}
+            label="Non-Violent"
+            value={stats?.nonViolent || 0}
+            color="success"
+          />
+          <StatCard
+            icon={Clock}
+            label="Avg. Time"
+            value={
+              stats?.avgInferenceTime
+                ? `${stats.avgInferenceTime.toFixed(2)}s`
+                : "0s"
+            }
+            color="primary"
+          />
+        </motion.div>
+
+        {/* Feature Cards */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="grid grid-cols-1 md:grid-cols-3 gap-6"
+        >
+          <FeatureCard
+            icon={Video}
+            title="Video Upload"
+            description="Upload MP4, AVI, or MOV videos for instant analysis"
+            href="/upload"
+          />
+          <FeatureCard
+            icon={Brain}
+            title="AI Analysis"
+            description="Powered by state-of-the-art deep learning models"
+            href="/predictions"
+          />
+          <FeatureCard
+            icon={TrendingUp}
+            title="Detailed Metrics"
+            description="Get confidence scores, accuracy, precision, and recall"
+            href="/predictions"
+          />
+        </motion.div>
+
+        {/* Quick Actions */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+          className="mt-12 glass-card rounded-2xl p-8"
+        >
+          <h2 className="text-2xl font-bold text-white mb-6 text-center">
+            Quick Actions
+          </h2>
+          <div className="grid grid-cols-3 gap-4">
+            <QuickAction href="/upload" icon={Video} label="Upload Video" />
+            <QuickAction href="/videos" icon={BarChart3} label="View Videos" />
+            <QuickAction href="/predictions" icon={Brain} label="Predictions" />
+          </div>
+        </motion.div>
+      </main>
+    </div>
+  );
+}
+
+interface StatusCardProps {
+  icon: React.ElementType;
+  label: string;
+  status: string;
+  isHealthy?: boolean;
+}
+
+function StatusCard({ icon: Icon, label, status, isHealthy }: StatusCardProps) {
+  return (
+    <div
+      className={cn(
+        "glass-card rounded-xl p-4 border",
+        isHealthy ? "border-success-500/30" : "border-dark-600",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Icon
+            className={cn(
+              "w-5 h-5",
+              isHealthy ? "text-success-400" : "text-dark-400",
+            )}
+          />
+          <span className="text-dark-300">{label}</span>
+        </div>
+        <div
+          className={cn(
+            "flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium",
+            isHealthy
+              ? "bg-success-500/10 text-success-400"
+              : "bg-dark-700 text-dark-400",
+          )}
+        >
+          <div
+            className={cn(
+              "w-2 h-2 rounded-full",
+              isHealthy ? "bg-success-500 animate-pulse" : "bg-dark-500",
+            )}
+          />
+          {status}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface StatCardProps {
+  icon: React.ElementType;
+  label: string;
+  value: number | string;
+  color: "primary" | "success" | "danger";
+}
+
+function StatCard({ icon: Icon, label, value, color }: StatCardProps) {
+  const colorClasses = {
+    primary: "bg-primary-500/10 text-primary-400 border-primary-500/20",
+    success: "bg-success-500/10 text-success-400 border-success-500/20",
+    danger: "bg-danger-500/10 text-danger-400 border-danger-500/20",
+  };
+
+  return (
+    <div
+      className={cn("glass-card rounded-xl p-6 border", colorClasses[color])}
+    >
+      <div className="flex items-center gap-3 mb-3">
+        <Icon className="w-5 h-5" />
+        <span className="text-sm text-dark-400">{label}</span>
+      </div>
+      <div className="text-3xl font-bold text-white">{value}</div>
+    </div>
+  );
+}
+
+interface FeatureCardProps {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  href: string;
+}
+
+function FeatureCard({
+  icon: Icon,
+  title,
+  description,
+  href,
+}: FeatureCardProps) {
+  return (
+    <Link href={href}>
+      <motion.div
+        whileHover={{ scale: 1.02, y: -5 }}
+        className="glass-card rounded-2xl p-6 cursor-pointer hover:border-primary-500/30 transition-all h-full"
+      >
+        <div className="w-12 h-12 rounded-xl bg-primary-500/20 flex items-center justify-center mb-4">
+          <Icon className="w-6 h-6 text-primary-400" />
+        </div>
+        <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
+        <p className="text-dark-400 text-sm">{description}</p>
+      </motion.div>
+    </Link>
+  );
+}
+
+interface QuickActionProps {
+  href: string;
+  icon: React.ElementType;
+  label: string;
+}
+
+function QuickAction({ href, icon: Icon, label }: QuickActionProps) {
+  return (
+    <Link href={href}>
+      <motion.div
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        className="flex flex-col items-center gap-3 p-4 rounded-xl bg-dark-800/50 hover:bg-dark-700/50 border border-dark-600 hover:border-primary-500/30 transition-all cursor-pointer"
+      >
+        <Icon className="w-6 h-6 text-primary-400" />
+        <span className="text-sm text-dark-300">{label}</span>
+      </motion.div>
+    </Link>
+  );
+}

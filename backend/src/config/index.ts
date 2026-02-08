@@ -10,6 +10,12 @@ interface IConfig {
     uri: string;
     dbName: string;
   };
+  postgres: {
+    uri: string;
+  };
+  rtspService: {
+    url: string;
+  };
   mlService: {
     url: string;
     timeout: number;
@@ -38,6 +44,16 @@ interface IConfig {
     level: string;
     file: string;
   };
+  auth: {
+    jwtSecret: string;
+    jwtExpiresIn: string;
+    google: {
+      clientId: string;
+      clientSecret: string;
+      callbackUrl: string;
+    };
+    mongodbAtlasUri: string;
+  };
 }
 
 const config: IConfig = {
@@ -47,6 +63,17 @@ const config: IConfig = {
   mongodb: {
     uri: process.env.MONGODB_URI || "mongodb://localhost:27017/ViolenceSense",
     dbName: process.env.MONGODB_DB_NAME || "ViolenceSense",
+  },
+
+  postgres: {
+    uri:
+      process.env.DATABASE_URL ||
+      process.env.POSTGRES_URI ||
+      "postgresql://postgres:password@localhost:5432/violencesense",
+  },
+
+  rtspService: {
+    url: process.env.RTSP_SERVICE_URL || "http://localhost:8080",
   },
 
   mlService: {
@@ -86,6 +113,20 @@ const config: IConfig = {
     level: process.env.LOG_LEVEL || "debug",
     file: process.env.LOG_FILE || "./logs/app.log",
   },
+
+  auth: {
+    jwtSecret: process.env.JWT_SECRET || "violencesense_jwt_secret_key_2024",
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID || "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+      callbackUrl:
+        process.env.GOOGLE_CALLBACK_URL ||
+        "http://localhost:5000/api/auth/google/callback",
+    },
+    mongodbAtlasUri: process.env.MONGODB_ATLAS_URI || "",
+  },
 };
 
+export { config };
 export default config;
