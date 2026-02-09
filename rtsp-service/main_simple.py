@@ -5,6 +5,7 @@ Minimal FastAPI application for RTSP stream playback with real-time ML inference
 """
 
 import sys
+import os
 import asyncio
 import threading
 import time
@@ -14,6 +15,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 from collections import deque
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -35,7 +37,9 @@ MODEL_PATH = Path(__file__).parent / ".." / "ml-service" / "models" / "violence_
 EXPECTED_FRAMES = 16
 TARGET_SIZE = (224, 224)
 INFERENCE_INTERVAL = 0.5  # Run inference every 0.5 seconds
-VIOLENCE_THRESHOLD = 0.5
+VIOLENCE_THRESHOLD = float(os.getenv("VIOLENCE_THRESHOLD", "0.50"))  # 50% for is_violent flag
+VIOLENCE_ALERT_THRESHOLD = float(os.getenv("VIOLENCE_ALERT_THRESHOLD", "0.90"))  # Alert at 90%+ (instant notification)
+VIOLENCE_ALERT_COOLDOWN = float(os.getenv("VIOLENCE_ALERT_COOLDOWN", "5.0"))  # 5 second cooldown between alerts
 
 
 # ============== Violence Detection Model ==============
@@ -193,6 +197,9 @@ class SimpleRTSPStream:
         # Latest prediction
         self.last_prediction: Optional[dict] = None
         self.prediction_callback = None  # Set by manager
+        
+        # Violence alert cooldown tracking
+        self._last_violence_alert_time = 0.0
     
     def start(self):
         """Start the stream capture and inference."""
@@ -283,9 +290,54 @@ class SimpleRTSPStream:
                     # Trigger callback for WebSocket broadcast
                     if self.prediction_callback:
                         self.prediction_callback(result)
+                    
+                    # Check if we should emit a violence alert (score >= 75%)
+                    self._maybe_emit_violence_alert(result)
                         
             except Exception as e:
                 logger.error(f"Inference error ({self.name}): {e}")
+    
+    def _maybe_emit_violence_alert(self, prediction: dict):
+        """Emit a violence_alert WebSocket message when score exceeds threshold."""
+        try:
+            score = float(prediction.get("violence_score", 0.0))
+        except (TypeError, ValueError):
+            return
+        
+        # Only alert if score is above alert threshold (90%+ for instant alerts)
+        if score < VIOLENCE_ALERT_THRESHOLD:
+            return
+        
+        # Cooldown: don't spam alerts
+        now = time.time()
+        if (now - self._last_violence_alert_time) < VIOLENCE_ALERT_COOLDOWN:
+            return
+        
+        self._last_violence_alert_time = now
+        
+        # Determine severity based on score
+        if score >= 0.90:
+            severity = "critical"
+        elif score >= 0.80:
+            severity = "high"
+        else:
+            severity = "medium"
+        
+        alert = {
+            "type": "violence_alert",
+            "event_id": str(uuid4()),
+            "stream_id": str(self.id),
+            "stream_name": self.name,
+            "timestamp": prediction.get("timestamp") or datetime.utcnow().isoformat(),
+            "confidence": score,
+            "max_score": score,
+            "max_confidence": score,
+            "severity": severity,
+            "message": f"Violence detected on {self.name} ({score * 100:.0f}% confidence)",
+        }
+        
+        logger.warning(f"🚨 VIOLENCE ALERT: Violence detected on {self.name} - {score:.0%} confidence")
+        broadcast_violence_alert(alert)
     
     def _connect(self):
         """Connect to the RTSP stream."""
@@ -363,27 +415,30 @@ active_connections: List[WebSocket] = []
 main_event_loop = None  # Will store the main event loop reference
 
 
-def broadcast_prediction(prediction: dict):
-    """Broadcast prediction to all WebSocket clients."""
+def _broadcast_ws(message_type: str, payload: dict):
+    """Broadcast any WebSocket message to all connected clients."""
     global main_event_loop
     if not main_event_loop or not active_connections:
         return
-        
-    import json
-    message = json.dumps({
-        "type": "inference_score",
-        "data": prediction
-    })
     
-    # Queue broadcast for async handling using the stored event loop
-    for ws in active_connections[:]:  # Copy list to avoid modification during iteration
+    import json
+    message = json.dumps({"type": message_type, "data": payload})
+    
+    for ws in active_connections[:]:
         try:
-            asyncio.run_coroutine_threadsafe(
-                ws.send_text(message),
-                main_event_loop
-            )
-        except:
+            asyncio.run_coroutine_threadsafe(ws.send_text(message), main_event_loop)
+        except Exception:
             pass
+
+
+def broadcast_prediction(prediction: dict):
+    """Broadcast inference score to all WebSocket clients."""
+    _broadcast_ws("inference_score", prediction)
+
+
+def broadcast_violence_alert(alert: dict):
+    """Broadcast violence alert notification to all WebSocket clients."""
+    _broadcast_ws("violence_alert", alert)
 
 
 class StreamManager:
@@ -620,6 +675,8 @@ async def get_model_status():
             "is_loaded": detector.is_loaded,
             "model_path": str(MODEL_PATH),
             "threshold": VIOLENCE_THRESHOLD,
+            "alert_threshold": VIOLENCE_ALERT_THRESHOLD,
+            "alert_cooldown": VIOLENCE_ALERT_COOLDOWN,
             "inference_interval": INFERENCE_INTERVAL
         }
     }
