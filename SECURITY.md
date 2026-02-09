@@ -5,11 +5,13 @@
 The following files contain sensitive credentials and should **NEVER** be committed to git:
 
 ### Google OAuth Credentials
+
 - `client_secret_*.json` - Contains Google OAuth client ID and secret
 - Use `client_secret.json.example` as a template
 - Obtain your credentials from [Google Cloud Console](https://console.cloud.google.com/)
 
 ### Environment Files
+
 - `.env` - Contains API keys, database credentials, etc.
 - `.env.local` - Local environment overrides
 - Use `.env.example` files as templates
