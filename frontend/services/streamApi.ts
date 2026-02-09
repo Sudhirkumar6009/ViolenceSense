@@ -171,6 +171,16 @@ class StreamService {
       if (filters?.offset) params.append("offset", filters.offset.toString());
 
       const response = await this.client.get(`/events?${params.toString()}`);
+
+      // Normalize events: ensure 'id' is populated from 'event_id' if missing
+      if (response.data?.data) {
+        response.data.data = response.data.data.map((event: any) => ({
+          ...event,
+          id: event.id || event.event_id,
+          event_id: event.event_id || event.id,
+        }));
+      }
+
       return response.data;
     } catch (error: any) {
       return { success: false, data: [] };
@@ -222,6 +232,46 @@ class StreamService {
   // Get person image URL (served from RTSP service)
   getPersonImageUrl(filename: string): string {
     return `${RTSP_SERVICE_URL}/api/v1/person-images/${filename}`;
+  }
+
+  // Get face/participant image URL (served from RTSP service clips/face_participants)
+  getFaceUrl(facePath: string): string {
+    if (!facePath) return "";
+    // facePath format: "face_participants/{event_id}/{filename.jpg}"
+    // API expects: /api/v1/faces/{event_id}/{filename}
+    const parts = facePath.replace(/^face_participants\//, "").split("/");
+    if (parts.length >= 2) {
+      return `${RTSP_SERVICE_URL}/api/v1/faces/${parts[0]}/${parts[1]}`;
+    }
+    return `${RTSP_SERVICE_URL}/api/v1/faces/${facePath}`;
+  }
+
+  // Extract faces from event clip (manual trigger)
+  async extractFaces(
+    eventId: string,
+  ): Promise<
+    ApiResponse<{ event_id: string; faces: string[]; count: number }>
+  > {
+    try {
+      const response = await this.client.post(`/faces/${eventId}/extract`);
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Get faces for an event
+  async getFaces(
+    eventId: string,
+  ): Promise<
+    ApiResponse<{ event_id: string; faces: string[]; count: number }>
+  > {
+    try {
+      const response = await this.client.get(`/faces/${eventId}`);
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   }
 }
 

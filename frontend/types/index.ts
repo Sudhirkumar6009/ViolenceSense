@@ -294,6 +294,7 @@ export type EventStatus =
 
 export interface ViolenceEvent {
   id: string;
+  event_id?: string; // Alias for id (used by RTSP service)
   stream_id: string;
   stream_name?: string;
   stream_location?: string;
@@ -315,6 +316,8 @@ export interface ViolenceEvent {
   thumbnail_path?: string;
   person_images?: string[];
   person_count?: number;
+  face_paths?: string[]; // Detected participant faces from clip
+  participants_count?: number;
   reviewed_at?: string;
   reviewed_by?: string;
   notes?: string;

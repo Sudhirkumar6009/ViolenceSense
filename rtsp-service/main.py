@@ -29,6 +29,9 @@ from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
+# Import face extractor
+from app.detection.face_extractor import get_face_extractor
+
 
 # Configure logging
 logger.remove()
@@ -202,6 +205,7 @@ class ViolenceEventState:
     post_buffer_frames: List[Tuple[np.ndarray, float]] = field(default_factory=list)
     clip_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
+    face_paths: List[str] = field(default_factory=list)  # Detected participant faces
 
 
 class EventRecorder:
@@ -414,6 +418,15 @@ class EventRecorder:
             
             logger.info(f"✅ Saved clip: {clip_filename} ({clip_duration:.1f}s, {frames_written} frames, {file_size/1024:.1f}KB)")
             
+            # Extract faces from the saved clip
+            try:
+                face_extractor = get_face_extractor()
+                event.face_paths = face_extractor.process_clip(str(clip_path), event.event_id)
+                logger.info(f"👤 Extracted {len(event.face_paths)} participant faces")
+            except Exception as fe:
+                logger.warning(f"Face extraction failed: {fe}")
+                event.face_paths = []
+            
             # Broadcast event completion with clip info
             broadcast_event_end(event, clip_duration)
             
@@ -466,6 +479,8 @@ def broadcast_event_end(event: ViolenceEventState, clip_duration: float):
         "clip_duration": clip_duration,
         "duration": (event.end_time - event.start_time).total_seconds() if event.end_time else 0,
         "duration_seconds": (event.end_time - event.start_time).total_seconds() if event.end_time else 0,
+        "face_paths": event.face_paths,  # Detected participant faces
+        "participants_count": len(event.face_paths),
     }
     _broadcast_ws("violence_alert", alert)
     
@@ -1131,6 +1146,97 @@ async def get_thumbnail(thumb_name: str):
     
     return FileResponse(
         thumb_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
+
+
+# ============== Face/Participant Image Routes ==============
+
+FACE_PARTICIPANTS_DIR = CLIPS_DIR / "face_participants"
+FACE_PARTICIPANTS_DIR.mkdir(exist_ok=True)
+
+
+@app.post("/api/v1/faces/{event_id}/extract")
+async def extract_faces_from_event(event_id: str):
+    """Manually trigger face extraction for an event clip."""
+    try:
+        # Find the event to get clip path
+        event = None
+        for e in stored_events:
+            if e.get("event_id") == event_id:
+                event = e
+                break
+        
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        clip_filename = event.get("clip_path")
+        if not clip_filename:
+            raise HTTPException(status_code=400, detail="No clip available for this event")
+        
+        clip_path = CLIPS_DIR / clip_filename
+        if not clip_path.exists():
+            raise HTTPException(status_code=404, detail=f"Clip file not found: {clip_filename}")
+        
+        logger.info(f"🔍 Manual face extraction requested for event {event_id}, clip: {clip_path}")
+        
+        # Run face extraction
+        face_extractor = get_face_extractor()
+        faces = face_extractor.process_clip(str(clip_path), event_id)
+        
+        # Update the stored event with face data
+        event["face_paths"] = faces
+        event["participants_count"] = len(faces)
+        
+        logger.info(f"✅ Extracted {len(faces)} faces for event {event_id}")
+        
+        return {
+            "success": True,
+            "data": {
+                "event_id": event_id,
+                "faces": faces,
+                "count": len(faces),
+                "clip_path": clip_filename
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Face extraction failed for event {event_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/faces/{event_id}")
+async def get_event_faces(event_id: str):
+    """Get list of detected participant faces for an event."""
+    try:
+        face_extractor = get_face_extractor()
+        faces = face_extractor.get_faces_for_event(event_id)
+        return {
+            "success": True,
+            "data": {
+                "event_id": event_id,
+                "faces": faces,
+                "count": len(faces)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get faces for event {event_id}: {e}")
+        return {"success": True, "data": {"event_id": event_id, "faces": [], "count": 0}}
+
+
+@app.get("/api/v1/faces/{event_id}/{face_name}")
+async def get_face_image(event_id: str, face_name: str):
+    """Serve a participant face image."""
+    face_path = FACE_PARTICIPANTS_DIR / event_id / face_name
+    if not face_path.exists():
+        raise HTTPException(status_code=404, detail="Face image not found")
+    
+    return FileResponse(
+        face_path,
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=3600"}
     )

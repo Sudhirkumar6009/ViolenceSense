@@ -24,6 +24,8 @@ import {
   XCircle,
   AlertTriangle,
   Image as ImageIcon,
+  Search,
+  Loader2,
 } from "lucide-react";
 import { ViolenceEvent } from "@/types";
 import { streamService } from "@/services/streamApi";
@@ -94,6 +96,9 @@ export function EventDetailModal({
     null,
   );
   const [isPlayingClip, setIsPlayingClip] = useState(false);
+  const [isExtractingFaces, setIsExtractingFaces] = useState(false);
+  const [extractedFaces, setExtractedFaces] = useState<string[]>([]);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
 
   // Handle Escape key
   useEffect(() => {
@@ -117,8 +122,36 @@ export function EventDetailModal({
     if (!isOpen) {
       setSelectedPersonImage(null);
       setIsPlayingClip(false);
+      setExtractedFaces([]);
+      setExtractionError(null);
     }
   }, [isOpen]);
+
+  // Handle face extraction
+  const handleExtractFaces = async () => {
+    if (!event?.id && !event?.event_id) return;
+
+    setIsExtractingFaces(true);
+    setExtractionError(null);
+
+    try {
+      const eventId = event.event_id || event.id;
+      const result = await streamService.extractFaces(eventId);
+
+      if (result.success && result.data) {
+        setExtractedFaces(result.data.faces || []);
+        if (result.data.count === 0) {
+          setExtractionError("No faces detected in this clip");
+        }
+      } else {
+        setExtractionError(result.error || "Failed to extract faces");
+      }
+    } catch (err: any) {
+      setExtractionError(err.message || "Face extraction failed");
+    } finally {
+      setIsExtractingFaces(false);
+    }
+  };
 
   if (!event) return null;
 
@@ -131,7 +164,23 @@ export function EventDetailModal({
   const thumbnailUrl = event.thumbnail_path
     ? streamService.getThumbnailUrl(event.thumbnail_path)
     : null;
+
+  // Support both legacy person_images, new face_paths, and manually extracted faces
   const personImages = event.person_images || [];
+  const facePaths = event.face_paths || [];
+  // Combine face_paths with manually extracted faces (avoid duplicates)
+  const allFaces = extractedFaces.length > 0 ? extractedFaces : facePaths;
+  const hasParticipants = personImages.length > 0 || allFaces.length > 0;
+  const participantsCount =
+    extractedFaces.length ||
+    event.participants_count ||
+    event.person_count ||
+    facePaths.length ||
+    personImages.length;
+
+  // Check if we can extract faces (has clip but no faces yet)
+  const canExtractFaces =
+    !!event.clip_path && allFaces.length === 0 && personImages.length === 0;
 
   const formatTime = (ts?: string) => {
     if (!ts) return "--";
@@ -354,20 +403,79 @@ export function EventDetailModal({
                 </div>
               </div>
 
-              {/* Person Captures */}
-              {personImages.length > 0 && (
-                <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-3">
+              {/* Person Captures / Participants */}
+              <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
                     <Users className="w-5 h-5 text-cyan-400" />
                     <h3 className="text-sm font-medium text-slate-300">
-                      Persons Detected (
-                      {event.person_count || personImages.length})
+                      Participants{" "}
+                      {hasParticipants ? `(${participantsCount})` : ""}
                     </h3>
                   </div>
+                  {/* Fetch Participants Button */}
+                  {event.clip_path && (
+                    <button
+                      onClick={handleExtractFaces}
+                      disabled={isExtractingFaces}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+                    >
+                      {isExtractingFaces ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Detecting...
+                        </>
+                      ) : (
+                        <>
+                          <Search className="w-4 h-4" />
+                          {hasParticipants ? "Re-scan Faces" : "Detect Faces"}
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {/* Extraction Error */}
+                {extractionError && (
+                  <div className="mb-3 px-3 py-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-400 text-sm">
+                    {extractionError}
+                  </div>
+                )}
+
+                {hasParticipants ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {/* Show face_paths (from clip analysis or manual extraction) */}
+                    {allFaces.map((img, idx) => (
+                      <motion.div
+                        key={`face-${idx}`}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => setSelectedPersonImage(img)}
+                        className="relative aspect-[3/4] bg-slate-900 rounded-lg overflow-hidden cursor-pointer group border border-slate-700 hover:border-cyan-500/50 transition-colors"
+                      >
+                        <img
+                          src={streamService.getFaceUrl(img)}
+                          alt={`Participant ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display =
+                              "none";
+                          }}
+                        />
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+                          <span className="text-xs text-white font-medium">
+                            Participant {idx + 1}
+                          </span>
+                        </div>
+                        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                          <ImageIcon className="w-6 h-6 text-white" />
+                        </div>
+                      </motion.div>
+                    ))}
+                    {/* Show legacy person_images */}
                     {personImages.map((img, idx) => (
                       <motion.div
-                        key={idx}
+                        key={`person-${idx}`}
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.98 }}
                         onClick={() => setSelectedPersonImage(img)}
@@ -393,8 +501,17 @@ export function EventDetailModal({
                       </motion.div>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="text-center py-6 text-slate-500">
+                    <Users className="w-10 h-10 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">
+                      {event.clip_path
+                        ? 'Click "Detect Faces" to scan for participants'
+                        : "No clip available for face detection"}
+                    </p>
+                  </div>
+                )}
+              </div>
 
               {/* Notes */}
               {event.notes && (
@@ -422,8 +539,12 @@ export function EventDetailModal({
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   exit={{ scale: 0.8, opacity: 0 }}
-                  src={streamService.getPersonImageUrl(selectedPersonImage)}
-                  alt="Person capture"
+                  src={
+                    selectedPersonImage.includes("face_participants")
+                      ? streamService.getFaceUrl(selectedPersonImage)
+                      : streamService.getPersonImageUrl(selectedPersonImage)
+                  }
+                  alt="Participant capture"
                   className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
                   onClick={(e) => e.stopPropagation()}
                 />
