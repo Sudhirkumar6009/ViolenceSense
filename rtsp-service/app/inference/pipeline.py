@@ -20,6 +20,7 @@ from loguru import logger
 
 from app.config import settings
 from app.stream.ingestion import FrameData, StreamIngestion
+from app.utils.motion_analysis import CameraShakeDetector, ScoreStabilizer, MotionAnalysis
 
 
 @dataclass
@@ -33,10 +34,26 @@ class InferenceResult:
     window_start: datetime
     window_end: datetime
     stream_id: int
+    # Motion analysis fields
+    is_camera_shake: bool = False
+    shake_score: float = 0.0
+    stabilized_score: float = 0.0
+    is_confirmed: bool = False  # True when violence sustained for 4-5 seconds
+    raw_score: float = 0.0  # Original unmodified score
+    is_stable: bool = True  # True when camera is stable (no global motion)
     
     @property
     def is_violent(self) -> bool:
-        return self.violence_score >= settings.violence_threshold
+        # CRITICAL: Only detect violence when camera is STABLE
+        # Any camera movement = automatic rejection
+        if self.is_camera_shake:
+            return False  # Never trigger during camera shake
+        if not self.is_stable:
+            return False  # Never trigger when scene is unstable
+        if self.is_confirmed:
+            return True  # Sustained violence confirmed
+        # For stable scenes only
+        return self.stabilized_score >= settings.violence_threshold
     
     @property
     def classification(self) -> str:
@@ -392,6 +409,20 @@ class InferencePipeline:
         
         # Track last processed frame to detect new frames
         self._last_frame_number: int = -1
+        
+        # Camera shake detection and score stabilization
+        # These prevent false positives from camera shake/rapid motion
+        self.shake_detector = CameraShakeDetector()
+        self.score_stabilizer = ScoreStabilizer(
+            confirmation_window_seconds=settings.shake_confirmation_seconds,  # Require 4 seconds sustained detection
+            inference_rate_hz=1000.0 / settings.inference_interval_ms,  # Match inference rate
+            min_confirmations=12,  # Need 12+ high scores in the window
+            decay_factor=0.85,
+            shake_penalty=settings.shake_score_penalty  # Reduce score during shake
+        )
+        
+        # Timestamp for stabilizer
+        self._start_time = time.time()
     
     async def _inference_loop(self):
         """
@@ -458,7 +489,7 @@ class InferencePipeline:
         logger.info(f"Inference pipeline stopped for stream {self.stream.config.name}")
     
     async def _run_inference(self, frames: List[FrameData]) -> Optional[InferenceResult]:
-        """Run inference on consecutive frames (CCTV-style)."""
+        """Run inference on consecutive frames (CCTV-style) with shake detection."""
         if not frames:
             return None
         
@@ -467,6 +498,14 @@ class InferencePipeline:
         try:
             # Extract numpy arrays from frame data
             frame_arrays = [f.frame for f in frames]
+            
+            # Step 1: Analyze frames for camera shake and suspicious motion
+            motion_analysis = self.shake_detector.analyze_frames(frame_arrays)
+            is_shake = motion_analysis.is_camera_shake
+            shake_score = motion_analysis.shake_score
+            is_static = motion_analysis.is_static_scene
+            is_suspicious = motion_analysis.is_suspicious_motion
+            is_stable = motion_analysis.is_stable  # Camera stability status
             
             # Run inference
             if self.use_local and self.local_inference:
@@ -479,49 +518,100 @@ class InferencePipeline:
             
             inference_time = (time.time() - start_time) * 1000
             
-            # Update score history
-            violence_score = result_data["violence_score"]
-            self.score_history.append(violence_score)
+            # Get raw violence score
+            raw_violence_score = result_data["violence_score"]
+            
+            # Step 2: Apply score stabilization with full motion analysis
+            # CRITICAL: Pass is_stable - scores are ZEROED when camera is moving
+            current_timestamp = time.time() - self._start_time
+            stabilized_score, is_confirmed = self.score_stabilizer.add_score(
+                raw_score=raw_violence_score,
+                timestamp=current_timestamp,
+                is_camera_shake=is_shake,
+                shake_score=shake_score,
+                is_static_scene=is_static,
+                is_suspicious_motion=is_suspicious,
+                is_stable=is_stable
+            )
+            
+            # Update score history (use stabilized score)
+            self.score_history.append(stabilized_score)
             if len(self.score_history) > self.max_history_size:
                 self.score_history.pop(0)
             
             # Compute window span from actual frame timestamps
             window_span_ms = (frames[-1].timestamp - frames[0].timestamp).total_seconds() * 1000
             
-            # Create result
+            # Check if this is a problematic frame (any camera motion)
+            is_problematic = is_shake or is_static or is_suspicious or not is_stable
+            
+            # Create result with motion analysis data
             result = InferenceResult(
-                violence_score=violence_score,
-                non_violence_score=result_data["non_violence_score"],
+                violence_score=stabilized_score,  # Use stabilized score for detection
+                non_violence_score=1.0 - stabilized_score,
                 timestamp=datetime.utcnow(),
                 inference_time_ms=result_data.get("inference_time_ms", inference_time),
                 frame_count=len(frames),
                 window_start=frames[0].timestamp,
                 window_end=frames[-1].timestamp,
-                stream_id=self.stream.config.id
+                stream_id=self.stream.config.id,
+                is_camera_shake=is_shake,
+                shake_score=shake_score,
+                stabilized_score=stabilized_score,
+                is_confirmed=is_confirmed,
+                raw_score=raw_violence_score,
+                is_stable=is_stable
             )
             
             # Update state
             self.state.last_inference_time = result.timestamp
-            self.state.recent_scores.append(violence_score)
+            self.state.recent_scores.append(stabilized_score)
             if len(self.state.recent_scores) > 30:
                 self.state.recent_scores.pop(0)
             
-            # Log scores — every score when violent, periodic otherwise
+            # Enhanced logging with full motion analysis info
             score_count = len(self.state.recent_scores)
-            if violence_score >= settings.violence_threshold:
+            
+            # Build status indicators
+            status_flags = []
+            if is_shake:
+                status_flags.append("📳SHAKE")
+            if is_static:
+                status_flags.append("🔲STATIC")
+            if is_suspicious:
+                status_flags.append("⚠️SUSPICIOUS")
+            if not is_stable:
+                status_flags.append("🔄UNSTABLE")
+            if is_confirmed:
+                status_flags.append("✅CONFIRMED")
+            status_str = " ".join(status_flags) if status_flags else "✓STABLE"
+            
+            if stabilized_score >= settings.violence_threshold and is_stable and not is_shake:
                 avg = sum(self.state.recent_scores[-5:]) / min(5, len(self.state.recent_scores))
                 logger.warning(
                     f"🔴 VIOLENT [{self.stream.config.name}] "
-                    f"score={violence_score:.1%} avg5={avg:.1%} "
+                    f"raw={raw_violence_score:.1%} stab={stabilized_score:.1%} avg5={avg:.1%} "
                     f"frames={len(frames)} span={window_span_ms:.0f}ms "
+                    f"sim={motion_analysis.frame_similarity:.1%} {status_str} "
+                    f"({inference_time:.0f}ms)"
+                )
+            elif is_problematic and raw_violence_score >= settings.violence_threshold:
+                # Log when high raw scores are being suppressed
+                logger.info(
+                    f"🚫 SUPPRESSED [{self.stream.config.name}] "
+                    f"raw={raw_violence_score:.1%} → stab={stabilized_score:.1%} "
+                    f"mag={motion_analysis.global_motion_magnitude:.1f} "
+                    f"uniform={motion_analysis.motion_uniformity:.1%} "
+                    f"stability={motion_analysis.stability_duration:.1f}s {status_str} "
                     f"({inference_time:.0f}ms)"
                 )
             elif score_count % 10 == 0:
                 avg = sum(self.state.recent_scores) / len(self.state.recent_scores)
                 logger.info(
                     f"📊 [{self.stream.config.name}] "
-                    f"score={violence_score:.1%} avg={avg:.1%} "
-                    f"frames={len(frames)} span={window_span_ms:.0f}ms "
+                    f"raw={raw_violence_score:.1%} stab={stabilized_score:.1%} avg={avg:.1%} "
+                    f"mag={motion_analysis.global_motion_magnitude:.1f} "
+                    f"stability={motion_analysis.stability_duration:.1f}s {status_str} "
                     f"({inference_time:.0f}ms)"
                 )
             

@@ -9,7 +9,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ViolenceEvent } from "@/types";
-import { eventService } from "@/services/streamApi";
+import { streamService } from "@/services/streamApi";
 
 interface EventModalProps {
   event: ViolenceEvent | null;
@@ -270,7 +270,7 @@ export function EventModal({
                     {/* Video Player */}
                     <div className="bg-black rounded-lg overflow-hidden aspect-video">
                       <video
-                        src={eventService.getClipUrl(event.id)}
+                        src={streamService.getClipUrl(event.clip_path)}
                         controls
                         autoPlay
                         className="w-full h-full"

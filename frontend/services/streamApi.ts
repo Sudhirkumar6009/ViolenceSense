@@ -207,12 +207,16 @@ class StreamService {
 
   // Get clip URL (served from RTSP service)
   getClipUrl(clipFilename: string): string {
+    if (!clipFilename) return "";
     return `${RTSP_SERVICE_URL}/api/v1/clips/${clipFilename}`;
   }
 
   // Get thumbnail URL (served from RTSP service)
   getThumbnailUrl(thumbnailFilename: string): string {
-    return `${RTSP_SERVICE_URL}/api/v1/thumbnails/${thumbnailFilename}`;
+    if (!thumbnailFilename) return "";
+    // Handle both "filename.jpg" and legacy "thumbnails/filename.jpg" formats
+    const cleanFilename = thumbnailFilename.replace(/^thumbnails\//, "");
+    return `${RTSP_SERVICE_URL}/api/v1/clips/thumbnails/${cleanFilename}`;
   }
 
   // Get person image URL (served from RTSP service)
@@ -353,12 +357,16 @@ class EventService {
 
   // Get clip URL (served from RTSP service)
   getClipUrl(clipFilename: string): string {
+    if (!clipFilename) return "";
     return `${RTSP_SERVICE_URL}/api/v1/clips/${clipFilename}`;
   }
 
   // Get thumbnail URL (served from RTSP service)
   getThumbnailUrl(thumbnailFilename: string): string {
-    return `${RTSP_SERVICE_URL}/api/v1/thumbnails/${thumbnailFilename}`;
+    if (!thumbnailFilename) return "";
+    // Handle both "filename.jpg" and legacy "thumbnails/filename.jpg" formats
+    const cleanFilename = thumbnailFilename.replace(/^thumbnails\//, "");
+    return `${RTSP_SERVICE_URL}/api/v1/clips/thumbnails/${cleanFilename}`;
   }
 }
 

@@ -29,6 +29,12 @@ export function AlertCard({
 }: AlertCardProps) {
   const [loading, setLoading] = useState(false);
 
+  // Helper to check if status is pending (handles both cases)
+  const isPending =
+    event.status === "PENDING" ||
+    event.status === "pending" ||
+    event.status === "NEW";
+
   const handleConfirm = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -143,7 +149,7 @@ export function AlertCard({
           <span className="text-lg font-semibold text-red-400">
             {(event.max_score * 100).toFixed(0)}%
           </span>
-          {event.status === "pending" && (
+          {isPending && (
             <span className="h-2 w-2 rounded-full bg-yellow-400 animate-pulse" />
           )}
         </div>
@@ -159,7 +165,7 @@ export function AlertCard({
       className={`
         rounded-lg border overflow-hidden
         ${severityColors[event.severity] || "border-gray-600 bg-gray-800"}
-        ${event.status === "pending" ? "animate-pulse" : ""}
+        ${isPending ? "animate-pulse" : ""}
         ${loading ? "opacity-70" : ""}
       `}
     >
@@ -208,7 +214,7 @@ export function AlertCard({
       </div>
 
       {/* Actions */}
-      {event.status === "pending" && (onConfirm || onDismiss || onViewClip) && (
+      {isPending && (onConfirm || onDismiss || onViewClip) && (
         <div className="p-4 border-t border-white/10 flex items-center gap-2">
           {event.clip_path && onViewClip && (
             <button
@@ -244,7 +250,7 @@ export function AlertCard({
       )}
 
       {/* View clip for non-pending */}
-      {event.status !== "pending" && event.clip_path && onViewClip && (
+      {!isPending && event.clip_path && onViewClip && (
         <div className="p-4 border-t border-white/10">
           <button
             onClick={handleViewClip}

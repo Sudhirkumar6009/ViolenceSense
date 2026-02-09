@@ -37,13 +37,18 @@ class Settings(BaseSettings):
     
     # Event Detection Thresholds
     violence_threshold: float = Field(default=0.50, alias="VIOLENCE_THRESHOLD")
-    min_consecutive_frames: int = Field(default=2, alias="MIN_CONSECUTIVE_FRAMES")
+    clip_confidence_threshold: float = Field(default=0.90, alias="CLIP_CONFIDENCE_THRESHOLD")  # 90%+ triggers clip recording
+    min_consecutive_frames: int = Field(default=3, alias="MIN_CONSECUTIVE_FRAMES")  # Need 3+ consecutive high scores
     alert_cooldown_seconds: int = Field(default=5, alias="ALERT_COOLDOWN_SECONDS")
     clip_duration_before: int = Field(default=5, alias="CLIP_DURATION_BEFORE")  # Quick alert clip
     clip_duration_after: int = Field(default=15, alias="CLIP_DURATION_AFTER")  # Quick alert clip
     full_clip_before: int = Field(default=10, alias="FULL_CLIP_BEFORE")  # Full evidence clip
     full_clip_after: int = Field(default=10, alias="FULL_CLIP_AFTER")  # Full evidence clip
     min_event_duration_seconds: float = Field(default=1.0, alias="MIN_EVENT_DURATION_SECONDS")
+    
+    # Shake Detection Settings
+    shake_confirmation_seconds: float = Field(default=4.0, alias="SHAKE_CONFIRMATION_SECONDS")  # Require 4s sustained for confirmation
+    shake_score_penalty: float = Field(default=0.6, alias="SHAKE_SCORE_PENALTY")  # Reduce score by 40% during shake
     
     # Storage
     clips_dir: str = Field(default="./clips", alias="CLIPS_DIR")

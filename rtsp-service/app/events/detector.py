@@ -44,6 +44,13 @@ class EventState:
     last_high_score_time: Optional[datetime] = None
     cooldown_until: Optional[datetime] = None
     alert_clip_saved: bool = False
+    
+    # High-confidence (90%+) clip tracking
+    high_conf_active: bool = False
+    high_conf_start_time: Optional[datetime] = None
+    high_conf_end_time: Optional[datetime] = None
+    high_conf_pre_frames: List[FrameData] = field(default_factory=list)
+    high_conf_peak_score: float = 0.0
 
 
 class EventDetector:
@@ -79,6 +86,7 @@ class EventDetector:
         
         # Configuration
         self.threshold = settings.violence_threshold
+        self.clip_conf_threshold = settings.clip_confidence_threshold  # 90% for clip recording
         self.min_consecutive = settings.min_consecutive_frames
         self.cooldown_seconds = settings.alert_cooldown_seconds
         self.clip_before = settings.clip_duration_before      # 5s for quick alert clip
@@ -93,7 +101,15 @@ class EventDetector:
         self._inference_count: int = 0
     
     async def process_result(self, result: InferenceResult):
-        """Process an inference result and check for events."""
+        """Process an inference result and check for events.
+        
+        Uses camera shake detection and score stabilization to prevent
+        false positives from rapid camera movement, static scenes,
+        and suspicious motion.
+        
+        CRITICAL: Camera movement causes 98-100% false positives from the model.
+        We ONLY trigger events when the camera is stable.
+        """
         now = datetime.utcnow()
         self._inference_count += 1
         
@@ -103,12 +119,51 @@ class EventDetector:
         # Check cooldown — but only block event creation, not scoring
         in_cooldown = self.state.cooldown_until and now < self.state.cooldown_until
         
-        is_violent = result.violence_score >= self.threshold
+        # Get all motion analysis flags
+        is_camera_shake = getattr(result, 'is_camera_shake', False)
+        is_stable = getattr(result, 'is_stable', True)
+        is_confirmed = getattr(result, 'is_confirmed', False)
+        stabilized_score = getattr(result, 'stabilized_score', result.violence_score)
+        raw_score = getattr(result, 'raw_score', result.violence_score)
+        
+        # CRITICAL: Any camera motion = reject
+        # is_stable means camera has been stable for 2+ seconds
+        is_problematic = is_camera_shake or not is_stable
+        
+        # Violence is detected ONLY when camera is stable
+        is_violent = result.is_violent  # Uses the updated property with stability handling
+        
+        # During any camera motion, NEVER trigger
+        if is_problematic:
+            is_violent = False  # Absolute rejection during camera movement
+            if raw_score >= self.threshold:
+                logger.debug(
+                    f"🚫 Rejected on {self.state.stream_name}: "
+                    f"raw={raw_score:.1%} stable={is_stable} shake={is_camera_shake}"
+                )
         
         if is_violent:
             self.state.consecutive_high_scores += 1
             self.state.consecutive_low_scores = 0
             self.state.last_high_score_time = now
+            
+            # === HIGH-CONFIDENCE CLIP TRACKING (90%+ threshold) ===
+            actual_score = result.violence_score
+            if actual_score >= self.clip_conf_threshold:
+                if not self.state.high_conf_active:
+                    # First hit of 90%+ - start high-confidence period
+                    self.state.high_conf_active = True
+                    self.state.high_conf_start_time = now
+                    self.state.high_conf_end_time = None
+                    # Snapshot 10s of pre-event frames for the clip
+                    self.state.high_conf_pre_frames = self.stream.get_frame_window(self.full_clip_before)
+                    logger.warning(
+                        f"🎬 HIGH-CONF clip started on {self.state.stream_name} "
+                        f"(score: {actual_score:.2%}, buffered {len(self.state.high_conf_pre_frames)} pre-frames)"
+                    )
+                # Track peak score
+                if actual_score > self.state.high_conf_peak_score:
+                    self.state.high_conf_peak_score = actual_score
             
             if self.state.is_active:
                 # === ONGOING EVENT: accumulate scores ===
@@ -122,11 +177,44 @@ class EventDetector:
                     
             elif not in_cooldown:
                 # === NOT IN EVENT: check if we should start one ===
-                if self.state.consecutive_high_scores >= self.min_consecutive:
+                # Prefer confirmed violence (sustained 4+ seconds), but also allow
+                # immediate trigger on very high confidence non-problematic frames
+                should_start_event = False
+                
+                if is_confirmed and is_stable:
+                    # Sustained violence confirmed AND camera is stable
+                    should_start_event = True
+                    logger.info(f"Starting event due to CONFIRMED violence on {self.state.stream_name}")
+                elif self.state.consecutive_high_scores >= self.min_consecutive and is_stable:
+                    # Enough consecutive high scores AND camera is stable
+                    if not is_problematic and stabilized_score >= self.threshold:
+                        should_start_event = True
+                        logger.info(f"Starting event due to {self.state.consecutive_high_scores} consecutive frames")
+                    elif stabilized_score >= 0.85:
+                        # Very high confidence - camera must still be stable
+                        should_start_event = True
+                        logger.info(f"Starting event due to HIGH CONFIDENCE ({stabilized_score:.1%})")
+                
+                if should_start_event:
                     await self._start_event(result)
         else:
             # Non-violent frame
             self.state.consecutive_low_scores += 1
+            
+            # === HIGH-CONFIDENCE CLIP END DETECTION ===
+            # Check if high-conf period dropped below 90%
+            actual_score = result.violence_score
+            if self.state.high_conf_active and actual_score < self.clip_conf_threshold:
+                self.state.high_conf_end_time = now
+                high_conf_duration = (now - self.state.high_conf_start_time).total_seconds() if self.state.high_conf_start_time else 0
+                logger.warning(
+                    f"🎬 HIGH-CONF clip ended on {self.state.stream_name} "
+                    f"(duration: {high_conf_duration:.1f}s, peak: {self.state.high_conf_peak_score:.2%})"
+                )
+                # Schedule clip save after capturing post-event footage
+                asyncio.create_task(self._save_high_conf_clip(high_conf_duration))
+                # Reset high-conf tracking
+                self.state.high_conf_active = False
             
             if self.state.is_active:
                 # Still in event — add score for tracking
@@ -301,6 +389,113 @@ class EventDetector:
         except Exception as e:
             logger.error(f"Failed to update event clip: {e}")
     
+    async def _save_high_conf_clip(self, violence_duration: float):
+        """
+        Save a full evidence clip for high-confidence (90%+) violence period.
+        
+        Structure: 10s before + violence duration + 10s after = complete evidence
+        Example: 30s violence → 10 + 30 + 10 = 50s clip
+        """
+        try:
+            # Wait for 10s of post-violence footage
+            await asyncio.sleep(self.full_clip_after)
+            
+            pre_frames = self.state.high_conf_pre_frames or []
+            
+            # Get all frames from violence start to now (includes violence + post)
+            total_window = violence_duration + self.full_clip_after + 2  # +2s buffer
+            post_frames = self.stream.get_frame_window(total_window)
+            
+            # Combine and deduplicate frames
+            seen_frame_numbers = set()
+            all_frames = []
+            
+            for f in pre_frames:
+                if f.frame_number not in seen_frame_numbers:
+                    seen_frame_numbers.add(f.frame_number)
+                    all_frames.append(f)
+            
+            for f in post_frames:
+                if f.frame_number not in seen_frame_numbers:
+                    seen_frame_numbers.add(f.frame_number)
+                    all_frames.append(f)
+            
+            all_frames.sort(key=lambda f: f.frame_number)
+            
+            if not all_frames:
+                logger.warning("No frames available for high-conf clip")
+                return
+            
+            clip_duration = len(all_frames) / 15.0  # Approximate at 15fps
+            expected_duration = self.full_clip_before + violence_duration + self.full_clip_after
+            
+            logger.info(
+                f"📹 HIGH-CONF evidence clip: {len(pre_frames)} pre + violence({violence_duration:.1f}s) + post "
+                f"= {len(all_frames)} frames (~{clip_duration:.1f}s, expected: {expected_duration:.1f}s)"
+            )
+            
+            # Generate unique event ID for this clip (use timestamp if no event)
+            clip_event_id = self.current_event_id or int(datetime.utcnow().timestamp())
+            
+            # Save the full evidence clip
+            clip_path = self.clip_recorder.save_clip(
+                all_frames,
+                self.state.stream_name,
+                clip_event_id,
+                suffix="_evidence"
+            )
+            
+            # Save thumbnail from peak violence moment (middle of violence period)
+            peak_idx = len(pre_frames) + int(len(all_frames) * 0.3)  # ~30% into clip
+            peak_idx = min(peak_idx, len(all_frames) - 1)
+            thumbnail_path = self.clip_recorder.save_thumbnail(
+                all_frames[peak_idx].frame,
+                self.state.stream_name,
+                clip_event_id
+            )
+            
+            # Update event in database with evidence clip
+            if self.current_event_id:
+                await self._update_event_clip(
+                    self.current_event_id,
+                    clip_path.split('/')[-1] if clip_path else None,
+                    thumbnail_path.split('/')[-1] if thumbnail_path else None,
+                    clip_duration
+                )
+            
+            # Broadcast notification
+            if self.on_event_start:
+                from pathlib import Path as P
+                clip_filename = P(clip_path).name if clip_path else None
+                thumb_filename = P(thumbnail_path).name if thumbnail_path else None
+                
+                self.on_event_start(self.state.stream_id, {
+                    "type": "evidence_clip",
+                    "event_id": clip_event_id,
+                    "stream_name": self.state.stream_name,
+                    "clip_path": clip_filename,
+                    "thumbnail_path": thumb_filename,
+                    "clip_duration": clip_duration,
+                    "violence_duration": violence_duration,
+                    "peak_confidence": self.state.high_conf_peak_score,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": f"Evidence clip saved: {violence_duration:.0f}s violence @ {self.state.high_conf_peak_score:.0%}"
+                })
+            
+            logger.warning(
+                f"✅ HIGH-CONF evidence clip saved: {clip_path} "
+                f"({clip_duration:.1f}s total, {violence_duration:.1f}s violence)"
+            )
+            
+            # Reset peak score for next high-conf event
+            self.state.high_conf_peak_score = 0.0
+            self.state.high_conf_pre_frames = []
+            
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Failed to save high-conf evidence clip: {e}")
+    
     async def _delayed_event_end(self, final_result: InferenceResult):
         """Wait for full_clip_after seconds to capture post-event footage, then end."""
         try:
@@ -438,6 +633,12 @@ class EventDetector:
         self.current_event_id = None
         self.pending_end_task = None
         self.alert_clip_task = None
+        # Reset high-confidence clip tracking
+        self.state.high_conf_active = False
+        self.state.high_conf_start_time = None
+        self.state.high_conf_end_time = None
+        self.state.high_conf_pre_frames = []
+        self.state.high_conf_peak_score = 0.0
     
     async def _create_event(self, result: InferenceResult) -> Optional[Event]:
         """Create a new event in the database."""

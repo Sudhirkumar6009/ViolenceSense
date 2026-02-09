@@ -9,20 +9,23 @@ import os
 import asyncio
 import threading
 import time
+import json
+import subprocess
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Callable
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import deque
 from uuid import uuid4
+from enum import Enum
 
 import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -40,6 +43,20 @@ INFERENCE_INTERVAL = 0.5  # Run inference every 0.5 seconds
 VIOLENCE_THRESHOLD = float(os.getenv("VIOLENCE_THRESHOLD", "0.50"))  # 50% for is_violent flag
 VIOLENCE_ALERT_THRESHOLD = float(os.getenv("VIOLENCE_ALERT_THRESHOLD", "0.90"))  # Alert at 90%+ (instant notification)
 VIOLENCE_ALERT_COOLDOWN = float(os.getenv("VIOLENCE_ALERT_COOLDOWN", "5.0"))  # 5 second cooldown between alerts
+
+# Model prediction smoothing (reduce false positives)
+PREDICTION_SMOOTHING_WINDOW = int(os.getenv("PREDICTION_SMOOTHING_WINDOW", "3"))  # Average last N predictions
+CONSECUTIVE_DETECTIONS_REQUIRED = int(os.getenv("CONSECUTIVE_DETECTIONS_REQUIRED", "2"))  # N consecutive high scores to trigger alert
+
+# Clip recording settings
+CLIP_BUFFER_SECONDS = int(os.getenv("CLIP_BUFFER_SECONDS", "10"))  # 10s before violence
+CLIP_AFTER_SECONDS = int(os.getenv("CLIP_AFTER_SECONDS", "10"))  # 10s after violence ends
+CLIP_MAX_DURATION = int(os.getenv("CLIP_MAX_DURATION", "60"))  # Max 60s violence duration before force-save
+CLIPS_DIR = Path(os.getenv("CLIPS_DIR", "./clips"))
+CLIPS_DIR.mkdir(exist_ok=True)
+THUMBNAILS_DIR = CLIPS_DIR / "thumbnails"
+THUMBNAILS_DIR.mkdir(exist_ok=True)
+STREAM_FPS = 30  # Assumed FPS for clip recording
 
 
 # ============== Violence Detection Model ==============
@@ -62,13 +79,14 @@ class ViolenceDetector:
                 return
             
             import tensorflow as tf
+            from tensorflow import keras
             
             # Suppress TF warnings
             tf.get_logger().setLevel('ERROR')
             
             # Try direct load first
             try:
-                self.model = tf.keras.models.load_model(str(model_path), compile=False)
+                self.model = keras.models.load_model(str(model_path), compile=False)
                 self.is_loaded = True
                 logger.info(f"✅ Loaded violence detection model from {model_path}")
                 return
@@ -76,7 +94,6 @@ class ViolenceDetector:
                 logger.warning(f"Direct load failed: {str(e)[:80]}, trying fallback...")
             
             # Fallback: Build architecture and load weights
-            from tensorflow import keras
             from tensorflow.keras import layers
             
             input_shape = (EXPECTED_FRAMES, *TARGET_SIZE, 3)
@@ -161,6 +178,313 @@ class ViolenceDetector:
 detector = ViolenceDetector()
 
 
+# ============== Event State & Clip Recording ==============
+
+class EventPhase(Enum):
+    """Violence event detection phases."""
+    IDLE = "idle"           # No violence detected
+    VIOLENCE = "violence"   # Violence in progress
+    POST_BUFFER = "post"    # Recording post-violence buffer
+
+
+@dataclass
+class ViolenceEventState:
+    """Tracks state of a violence event for clip recording."""
+    event_id: str
+    stream_id: int
+    stream_name: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    max_score: float = 0.0
+    frame_scores: List[float] = field(default_factory=list)
+    pre_buffer_frames: List[Tuple[np.ndarray, float]] = field(default_factory=list)  # (frame, timestamp)
+    event_frames: List[Tuple[np.ndarray, float]] = field(default_factory=list)
+    post_buffer_frames: List[Tuple[np.ndarray, float]] = field(default_factory=list)
+    clip_path: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+
+
+class EventRecorder:
+    """Records violence event clips with pre/post buffers."""
+    
+    def __init__(self, stream_id: int, stream_name: str):
+        self.stream_id = stream_id
+        self.stream_name = stream_name
+        self.phase = EventPhase.IDLE
+        self.current_event: Optional[ViolenceEventState] = None
+        
+        # Rolling buffer for 10s before violence (frames with timestamps)
+        buffer_size = CLIP_BUFFER_SECONDS * STREAM_FPS
+        self.pre_buffer: deque = deque(maxlen=buffer_size)
+        
+        # Post-buffer countdown
+        self.post_buffer_start: Optional[float] = None
+        
+        # Violence start time for max duration check
+        self.violence_start_time: Optional[float] = None
+        self._lock = threading.Lock()
+    
+    def add_frame(self, frame: np.ndarray, timestamp: float):
+        """Add frame to rolling pre-buffer and collect frames during violence/post-buffer phases."""
+        with self._lock:
+            # Always add to pre-buffer (rolling window for 10s before violence)
+            self.pre_buffer.append((frame.copy(), timestamp))
+            
+            # If in violence phase, collect all frames for the clip
+            if self.phase == EventPhase.VIOLENCE and self.current_event:
+                self.current_event.event_frames.append((frame.copy(), timestamp))
+                
+                # Check if max violence duration exceeded - force end event
+                if self.violence_start_time:
+                    violence_duration = timestamp - self.violence_start_time
+                    if violence_duration >= CLIP_MAX_DURATION:
+                        logger.warning(f"⚠️ Max violence duration ({CLIP_MAX_DURATION}s) exceeded, force-saving clip")
+                        self._end_violence(timestamp)
+            
+            # If in post-buffer phase, collect frames
+            elif self.phase == EventPhase.POST_BUFFER and self.current_event:
+                self.current_event.post_buffer_frames.append((frame.copy(), timestamp))
+                
+                # Check if post-buffer time elapsed
+                if self.post_buffer_start is not None:
+                    elapsed = timestamp - self.post_buffer_start
+                    if elapsed >= CLIP_AFTER_SECONDS:
+                        self._finalize_event()
+    
+    def on_prediction(self, score: float, frame: np.ndarray, timestamp: float):
+        """Process prediction result."""
+        with self._lock:
+            is_violent = score >= VIOLENCE_ALERT_THRESHOLD
+            
+            if self.phase == EventPhase.IDLE:
+                if is_violent:
+                    # Violence started - begin event
+                    self._start_event(score, timestamp)
+                    
+            elif self.phase == EventPhase.VIOLENCE:
+                if is_violent:
+                    # Violence continues - update scores (frames are collected by add_frame())
+                    if self.current_event is not None:
+                        self.current_event.frame_scores.append(score)
+                        self.current_event.max_score = max(self.current_event.max_score, score)
+                else:
+                    # Violence ended - start post-buffer
+                    self._end_violence(timestamp)
+                    
+            elif self.phase == EventPhase.POST_BUFFER:
+                if is_violent:
+                    # Violence resumed - go back to violence phase
+                    if self.current_event is not None:
+                        self.phase = EventPhase.VIOLENCE
+                        self.current_event.end_time = None
+                        self.post_buffer_start = None
+                        # Move post_buffer_frames to event_frames
+                        self.current_event.event_frames.extend(self.current_event.post_buffer_frames)
+                        self.current_event.post_buffer_frames = []
+                        self.current_event.frame_scores.append(score)
+                        self.current_event.max_score = max(self.current_event.max_score, score)
+    
+    def _start_event(self, score: float, timestamp: float):
+        """Start a new violence event."""
+        event_id = str(uuid4())
+        self.current_event = ViolenceEventState(
+            event_id=event_id,
+            stream_id=self.stream_id,
+            stream_name=self.stream_name,
+            start_time=datetime.utcnow(),
+            max_score=score,
+            frame_scores=[score],
+            pre_buffer_frames=list(self.pre_buffer),
+        )
+        self.phase = EventPhase.VIOLENCE
+        self.violence_start_time = timestamp
+        logger.info(f"🔴 Violence event started: {event_id} on {self.stream_name} (score: {score:.0%}, pre-buffer: {len(self.pre_buffer)} frames)")
+        
+        # Broadcast event_start
+        broadcast_event_start(self.current_event)
+    
+    def _end_violence(self, timestamp: float):
+        """Violence ended, start post-buffer recording."""
+        if self.current_event:
+            self.current_event.end_time = datetime.utcnow()
+            self.phase = EventPhase.POST_BUFFER
+            self.post_buffer_start = timestamp
+            self.violence_start_time = None
+            event_frames_count = len(self.current_event.event_frames)
+            logger.info(f"🟡 Violence ended, collected {event_frames_count} event frames, recording {CLIP_AFTER_SECONDS}s post-buffer...")
+    
+    def _finalize_event(self):
+        """Finalize event and save clip."""
+        if not self.current_event:
+            return
+        
+        event = self.current_event
+        total_frames = len(event.pre_buffer_frames) + len(event.event_frames) + len(event.post_buffer_frames)
+        logger.info(f"🎬 Finalizing event {event.event_id}: {len(event.pre_buffer_frames)} pre + {len(event.event_frames)} event + {len(event.post_buffer_frames)} post = {total_frames} total frames")
+        
+        # Save clip in background thread
+        threading.Thread(
+            target=self._save_clip,
+            args=(event,),
+            daemon=True
+        ).start()
+        
+        # Reset state
+        self.phase = EventPhase.IDLE
+        self.current_event = None
+        self.post_buffer_start = None
+        self.violence_start_time = None
+    
+    def _save_clip(self, event: ViolenceEventState):
+        """Save video clip from collected frames."""
+        try:
+            # Combine all frames: pre-buffer + event + post-buffer
+            all_frames = []
+            all_frames.extend(event.pre_buffer_frames)
+            all_frames.extend(event.event_frames)
+            all_frames.extend(event.post_buffer_frames)
+            
+            logger.info(f"📼 Saving clip for event {event.event_id}: "
+                       f"{len(event.pre_buffer_frames)} pre + {len(event.event_frames)} event + "
+                       f"{len(event.post_buffer_frames)} post = {len(all_frames)} total frames")
+            
+            if not all_frames:
+                logger.warning(f"❌ No frames to save for event {event.event_id}")
+                return
+            
+            # Get frame dimensions from first frame
+            first_frame = all_frames[0][0]
+            height, width = first_frame.shape[:2]
+            logger.debug(f"Frame dimensions: {width}x{height}")
+            
+            # Generate filename
+            timestamp_str = event.start_time.strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c if c.isalnum() else "_" for c in event.stream_name)
+            clip_filename = f"{timestamp_str}_{safe_name}_{event.event_id[:8]}.mp4"
+            clip_path = CLIPS_DIR / clip_filename
+            
+            # Save thumbnail (middle frame of event, or first event frame if no middle)
+            thumb_filename = f"{timestamp_str}_{safe_name}_{event.event_id[:8]}.jpg"
+            thumb_path = THUMBNAILS_DIR / thumb_filename
+            
+            event_start_idx = len(event.pre_buffer_frames)
+            event_end_idx = event_start_idx + len(event.event_frames)
+            mid_idx = (event_start_idx + event_end_idx) // 2
+            
+            # Ensure we have a valid index for thumbnail
+            if mid_idx >= len(all_frames):
+                mid_idx = len(all_frames) // 2
+            if mid_idx < len(all_frames):
+                success = cv2.imwrite(str(thumb_path), all_frames[mid_idx][0])
+                if success:
+                    # Store just the filename, not the path prefix
+                    event.thumbnail_path = thumb_filename
+                    logger.info(f"📸 Saved thumbnail: {thumb_filename}")
+                else:
+                    logger.error(f"❌ Failed to save thumbnail: {thumb_path}")
+            
+            # Write video using OpenCV with H.264 codec for better compatibility
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(clip_path), fourcc, STREAM_FPS, (width, height))
+            
+            if not out.isOpened():
+                logger.error(f"❌ Failed to open VideoWriter for {clip_path}")
+                return
+            
+            frames_written = 0
+            for frame, _ in all_frames:
+                out.write(frame)
+                frames_written += 1
+            
+            out.release()
+            
+            # Verify file was created
+            if not clip_path.exists():
+                logger.error(f"❌ Clip file not created: {clip_path}")
+                return
+            
+            file_size = clip_path.stat().st_size
+            if file_size < 1000:  # Less than 1KB is likely corrupt
+                logger.error(f"❌ Clip file too small ({file_size} bytes): {clip_path}")
+                return
+            
+            # Calculate duration
+            clip_duration = len(all_frames) / STREAM_FPS
+            event.clip_path = clip_filename
+            
+            logger.info(f"✅ Saved clip: {clip_filename} ({clip_duration:.1f}s, {frames_written} frames, {file_size/1024:.1f}KB)")
+            
+            # Broadcast event completion with clip info
+            broadcast_event_end(event, clip_duration)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save clip for event {event.event_id}: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+def broadcast_event_start(event: ViolenceEventState):
+    """Broadcast event_start to WebSocket clients."""
+    alert = {
+        "type": "event_start",
+        "event_id": event.event_id,
+        "stream_id": str(event.stream_id),
+        "stream_name": event.stream_name,
+        "start_time": event.start_time.isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
+        "confidence": event.max_score,
+        "max_score": event.max_score,
+        "severity": "critical" if event.max_score >= 0.90 else "high",
+        "status": "PENDING",
+        "message": f"Violence detected on {event.stream_name} ({event.max_score * 100:.0f}% confidence)",
+    }
+    _broadcast_ws("event_start", alert)
+
+
+def broadcast_event_end(event: ViolenceEventState, clip_duration: float):
+    """Broadcast event_end with clip info to WebSocket clients."""
+    avg_score = sum(event.frame_scores) / len(event.frame_scores) if event.frame_scores else 0
+    
+    alert = {
+        "type": "violence_alert",
+        "event_id": event.event_id,
+        "stream_id": str(event.stream_id),
+        "stream_name": event.stream_name,
+        "start_time": event.start_time.isoformat(),
+        "end_time": event.end_time.isoformat() if event.end_time else None,
+        "timestamp": datetime.utcnow().isoformat(),
+        "confidence": event.max_score,
+        "max_score": event.max_score,
+        "max_confidence": event.max_score,
+        "avg_confidence": avg_score,
+        "avg_score": avg_score,
+        "severity": "critical" if event.max_score >= 0.90 else "high",
+        "status": "PENDING",  # Initial status for review
+        "message": f"Violence detected on {event.stream_name} ({event.max_score * 100:.0f}% confidence)",
+        "clip_path": event.clip_path,
+        "thumbnail_path": event.thumbnail_path,
+        "clip_duration": clip_duration,
+        "duration": (event.end_time - event.start_time).total_seconds() if event.end_time else 0,
+        "duration_seconds": (event.end_time - event.start_time).total_seconds() if event.end_time else 0,
+    }
+    _broadcast_ws("violence_alert", alert)
+    
+    # Also store event in memory for API access
+    store_event(alert)
+
+
+# In-memory event storage (for demo - use database in production)
+stored_events: List[dict] = []
+MAX_STORED_EVENTS = 100
+
+
+def store_event(event: dict):
+    """Store event in memory."""
+    global stored_events
+    stored_events.insert(0, event)
+    stored_events = stored_events[:MAX_STORED_EVENTS]
+
+
 # ============== Simple Stream Class ==============
 
 @dataclass
@@ -192,14 +516,21 @@ class SimpleRTSPStream:
         self._lock = threading.Lock()
         
         # Frame buffer for inference (sliding window)
-        self.frame_buffer: deque = deque(maxlen=60)  # ~2 seconds at 30fps
+        self.frame_buffer: deque = deque(maxlen=60)  # ~2 seconsds at 30fps
         
         # Latest prediction
         self.last_prediction: Optional[dict] = None
-        self.prediction_callback = None  # Set by manager
+        self.prediction_callback: Optional[Callable[[dict], None]] = None  # Set by manager
         
         # Violence alert cooldown tracking
         self._last_violence_alert_time = 0.0
+        
+        # Prediction smoothing to reduce false positives
+        self._recent_scores: deque = deque(maxlen=PREDICTION_SMOOTHING_WINDOW)
+        self._consecutive_high_count = 0
+        
+        # Event recorder for clip generation
+        self.event_recorder = EventRecorder(stream_id, name)
     
     def start(self):
         """Start the stream capture and inference."""
@@ -219,6 +550,14 @@ class SimpleRTSPStream:
     def stop(self):
         """Stop the stream capture."""
         self.is_running = False
+        
+        # Finalize any pending violence event before stopping
+        if self.event_recorder.phase != EventPhase.IDLE and self.event_recorder.current_event:
+            logger.info(f"🛑 Stream stopping, finalizing pending violence event...")
+            self.event_recorder._end_violence(time.time())
+            # Force immediate finalization
+            self.event_recorder._finalize_event()
+        
         if self._capture_thread:
             self._capture_thread.join(timeout=2)
         if self._inference_thread:
@@ -230,33 +569,40 @@ class SimpleRTSPStream:
         logger.info(f"Stopped stream: {self.name}")
     
     def _capture_loop(self):
-        """Main capture loop running in background thread."""
+        """Main capture loop - reads frames with minimal latency."""
         while self.is_running:
             try:
                 if self.capture is None or not self.capture.isOpened():
                     self._connect()
                     continue
                 
-                ret, frame = self.capture.read()
+                # Grab multiple frames to flush buffer and get latest
+                for _ in range(2):
+                    self.capture.grab()
+                
+                ret, frame = self.capture.retrieve()
                 if ret:
+                    current_time = time.time()
                     with self._lock:
                         self.last_frame = frame
                         self.frame_buffer.append(frame.copy())
                         self.frame_count += 1
                         self.is_connected = True
                         self.error = None
+                    
+                    # Feed frame to event recorder for pre-buffer
+                    self.event_recorder.add_frame(frame, current_time)
                 else:
                     self.is_connected = False
-                    self._connect()  # Try reconnecting
+                    self._connect()
                     
             except Exception as e:
                 self.error = str(e)
                 self.is_connected = False
-                logger.error(f"Stream error ({self.name}): {e}")
-                time.sleep(1)
+                time.sleep(0.5)
     
     def _inference_loop(self):
-        """Run inference periodically on buffered frames."""
+        """Run inference periodically on buffered frames with smoothing."""
         while self.is_running:
             try:
                 time.sleep(INFERENCE_INTERVAL)
@@ -274,28 +620,48 @@ class SimpleRTSPStream:
                 result = detector.predict(frames)
                 
                 if result:
+                    raw_score = result["violence_score"]
+                    
+                    # Apply temporal smoothing to reduce false positives
+                    self._recent_scores.append(raw_score)
+                    smoothed_score = sum(self._recent_scores) / len(self._recent_scores)
+                    
+                    # Update result with smoothed score
+                    result["raw_score"] = raw_score
+                    result["violence_score"] = smoothed_score
+                    result["non_violence_score"] = 1.0 - smoothed_score
+                    result["is_violent"] = smoothed_score >= VIOLENCE_THRESHOLD
                     result["stream_id"] = str(self.id)
                     result["stream_name"] = self.name
+                    
+                    # Track consecutive high scores
+                    if raw_score >= VIOLENCE_ALERT_THRESHOLD:
+                        self._consecutive_high_count += 1
+                    else:
+                        self._consecutive_high_count = 0
+                    
                     self.last_prediction = result
                     
-                    # Log result
-                    score = result["violence_score"]
-                    if score >= VIOLENCE_THRESHOLD:
-                        logger.warning(f"🔴 VIOLENCE [{self.name}] score={score:.1%}")
-                    else:
-                        # Log every 5th normal result
-                        if self.frame_count % 150 == 0:  # ~5 seconds
-                            logger.info(f"📊 [{self.name}] score={score:.1%}")
+                    # Simplified logging - only log significant events
+                    if smoothed_score >= VIOLENCE_THRESHOLD:
+                        logger.warning(f"[{self.name}] Violence: {smoothed_score:.0%}")
                     
                     # Trigger callback for WebSocket broadcast
                     if self.prediction_callback:
                         self.prediction_callback(result)
                     
-                    # Check if we should emit a violence alert (score >= 75%)
-                    self._maybe_emit_violence_alert(result)
+                    # Feed RAW score to event recorder (use raw score for detection to catch spikes)
+                    # This ensures we don't miss violence events due to smoothing
+                    current_frame = frames[-1] if frames else None
+                    if current_frame is not None:
+                        self.event_recorder.on_prediction(raw_score, current_frame, time.time())
+                    
+                    # Only emit alert if consecutive detections threshold met
+                    if self._consecutive_high_count >= CONSECUTIVE_DETECTIONS_REQUIRED:
+                        self._maybe_emit_violence_alert(result)
                         
             except Exception as e:
-                logger.error(f"Inference error ({self.name}): {e}")
+                logger.error(f"Inference error: {e}")
     
     def _maybe_emit_violence_alert(self, prediction: dict):
         """Emit a violence_alert WebSocket message when score exceeds threshold."""
@@ -328,42 +694,46 @@ class SimpleRTSPStream:
             "event_id": str(uuid4()),
             "stream_id": str(self.id),
             "stream_name": self.name,
-            "timestamp": prediction.get("timestamp") or datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
             "confidence": score,
-            "max_score": score,
-            "max_confidence": score,
             "severity": severity,
-            "message": f"Violence detected on {self.name} ({score * 100:.0f}% confidence)",
+            "message": f"Violence detected on {self.name} ({score * 100:.0f}%)",
         }
         
-        logger.warning(f"🚨 VIOLENCE ALERT: Violence detected on {self.name} - {score:.0%} confidence")
+        logger.warning(f"ALERT: {self.name} - {score:.0%}")
         broadcast_violence_alert(alert)
     
     def _connect(self):
-        """Connect to the RTSP stream."""
+        """Connect to the RTSP stream with low latency settings."""
         try:
             if self.capture:
                 self.capture.release()
             
             logger.info(f"Connecting to: {self.url}")
-            self.capture = cv2.VideoCapture(self.url)
             
-            # Set buffer size to reduce latency
+            # Use FFmpeg backend with low-latency options
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1'
+            
+            self.capture = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+            
+            # Reduce buffer for minimal latency
             self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # Set frame dimensions if needed
+            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             
             if self.capture.isOpened():
                 self.is_connected = True
-                logger.info(f"Connected to: {self.name}")
+                logger.info(f"Connected: {self.name}")
             else:
                 self.is_connected = False
                 self.error = "Failed to open stream"
-                import time
-                time.sleep(2)  # Wait before retry
+                time.sleep(2)
                 
         except Exception as e:
             self.error = str(e)
             self.is_connected = False
-            import time
             time.sleep(2)
     
     def get_frame(self) -> Optional[np.ndarray]:
@@ -622,24 +992,32 @@ async def get_frame(stream_id: int):
 
 @app.get("/api/v1/streams/{stream_id}/mjpeg")
 async def mjpeg_stream(stream_id: int):
-    """Get MJPEG video stream."""
+    """Get real-time MJPEG video stream."""
     stream = stream_manager.get_stream(stream_id)
     if not stream:
         raise HTTPException(status_code=404, detail="Stream not found")
     
     async def generate():
+        last_frame = None
         while True:
             jpeg = stream.get_jpeg()
-            if jpeg:
+            if jpeg and jpeg != last_frame:
                 yield (
                     b'--frame\r\n'
                     b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n'
                 )
-            await asyncio.sleep(0.033)  # ~30 FPS
+                last_frame = jpeg
+            await asyncio.sleep(0.016)  # ~60 FPS max, smoother display
     
     return StreamingResponse(
         generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no"
+        }
     )
 
 
@@ -682,6 +1060,82 @@ async def get_model_status():
     }
 
 
+# ============== Event & Clip API Routes ==============
+
+@app.get("/api/v1/events")
+async def get_events(limit: int = 50, offset: int = 0, status: Optional[str] = None):
+    """Get violence events with clips."""
+    events = stored_events[offset:offset + limit]
+    return {
+        "success": True,
+        "data": events,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "count": len(stored_events)
+        }
+    }
+
+
+@app.get("/api/v1/events/{event_id}")
+async def get_event(event_id: str):
+    """Get a specific violence event."""
+    for event in stored_events:
+        if event.get("event_id") == event_id:
+            return {"success": True, "data": event}
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.post("/api/v1/events/{event_id}/action-executed")
+async def mark_action_executed(event_id: str):
+    """Mark event as action executed."""
+    for event in stored_events:
+        if event.get("event_id") == event_id:
+            event["status"] = "ACTION_EXECUTED"
+            event["reviewed_at"] = datetime.utcnow().isoformat()
+            return {"success": True, "message": "Event marked as action executed"}
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.post("/api/v1/events/{event_id}/no-action-required")
+async def mark_no_action_required(event_id: str):
+    """Mark event as no action required."""
+    for event in stored_events:
+        if event.get("event_id") == event_id:
+            event["status"] = "NO_ACTION_REQUIRED"
+            event["reviewed_at"] = datetime.utcnow().isoformat()
+            return {"success": True, "message": "Event marked as no action required"}
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.get("/api/v1/clips/{clip_name}")
+async def get_clip(clip_name: str):
+    """Serve a violence event clip."""
+    clip_path = CLIPS_DIR / clip_name
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    
+    return FileResponse(
+        clip_path,
+        media_type="video/mp4",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
+
+
+@app.get("/api/v1/clips/thumbnails/{thumb_name}")
+async def get_thumbnail(thumb_name: str):
+    """Serve a violence event thumbnail."""
+    thumb_path = THUMBNAILS_DIR / thumb_name
+    if not thumb_path.exists():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    
+    return FileResponse(
+        thumb_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
+
+
 # ============== WebSocket for real-time predictions ==============
 
 @app.websocket("/ws")
@@ -706,7 +1160,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main_simple:app",
+        "main:app",
         host="0.0.0.0",
         port=8080,
         reload=False,

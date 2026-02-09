@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { AlertCard, LiveAlertBanner } from "@/components/AlertCard";
 import { EventModal } from "@/components/EventModal";
 import { ViolenceEvent, EventFilters, AlertMessage } from "@/types";
-import { eventService } from "@/services/streamApi";
+import { streamService } from "@/services/streamApi";
 import { useWebSocket } from "@/hooks/useWebSocket";
 
 type StatusFilter = "all" | "pending" | "confirmed" | "dismissed";
@@ -36,7 +36,7 @@ export default function AlertsTab() {
           started_at: data.timestamp,
           max_score: data.max_score,
           avg_score: 0,
-          status: "pending",
+          status: "PENDING",
           severity: data.severity || "high",
         };
         setLiveAlert(newEvent);
@@ -49,36 +49,75 @@ export default function AlertsTab() {
   const fetchEvents = useCallback(
     async (reset = false) => {
       try {
-        const filters: EventFilters = { limit: 20, offset: reset ? 0 : offset };
-        if (statusFilter !== "all") filters.status = statusFilter;
-        if (severityFilter !== "all") filters.severity = severityFilter;
-        const response = await eventService.getEvents(filters);
+        // Use streamService to get events from RTSP service where they are stored
+        const filters: { status?: string; limit?: number; offset?: number } = {
+          limit: 20,
+          offset: reset ? 0 : offset,
+        };
+        if (statusFilter !== "all") {
+          // Map frontend status to backend status
+          const statusMap: Record<string, string> = {
+            pending: "PENDING",
+            confirmed: "ACTION_EXECUTED",
+            dismissed: "NO_ACTION_REQUIRED",
+          };
+          filters.status = statusMap[statusFilter] || statusFilter;
+        }
+        const response = await streamService.getEvents(filters);
         if (response.success) {
+          // Normalize event data to match ViolenceEvent type
+          const normalizedEvents: ViolenceEvent[] = response.data.map(
+            (e: any) => ({
+              id: e.event_id || e.id,
+              stream_id: e.stream_id,
+              stream_name: e.stream_name,
+              started_at: e.start_time || e.started_at || e.timestamp,
+              ended_at: e.end_time || e.ended_at,
+              max_score: e.max_score || e.max_confidence || e.confidence || 0,
+              avg_score: e.avg_score || e.avg_confidence || 0,
+              status: (e.status?.toUpperCase() ||
+                "PENDING") as ViolenceEvent["status"],
+              severity:
+                e.severity ||
+                (e.max_score >= 0.9
+                  ? "critical"
+                  : e.max_score >= 0.8
+                    ? "high"
+                    : "medium"),
+              clip_path: e.clip_path,
+              thumbnail_path: e.thumbnail_path,
+              clip_duration: e.clip_duration,
+              duration_seconds: e.duration || e.duration_seconds,
+            }),
+          );
           if (reset) {
-            setEvents(response.data);
+            setEvents(normalizedEvents);
           } else {
-            setEvents((prev) => [...prev, ...response.data]);
+            setEvents((prev) => [...prev, ...normalizedEvents]);
           }
-          setTotal(response.pagination?.total || response.data.length);
-          setHasMore(response.pagination?.hasMore || false);
+          setTotal(response.pagination?.count || normalizedEvents.length);
+          setHasMore(
+            (response.pagination?.offset || 0) + normalizedEvents.length <
+              (response.pagination?.count || 0),
+          );
           setError(null);
         } else {
           setError("Failed to fetch events");
         }
       } catch (err: any) {
-        setError(err.message || "Failed to connect to backend");
+        setError(err.message || "Failed to connect to RTSP service");
       } finally {
         setLoading(false);
       }
     },
-    [statusFilter, severityFilter, offset],
+    [statusFilter, offset],
   );
 
   useEffect(() => {
     setLoading(true);
     setOffset(0);
     fetchEvents(true);
-  }, [statusFilter, severityFilter]);
+  }, [statusFilter]); // Removed severityFilter since RTSP service doesn't support it
 
   const loadMore = useCallback(() => {
     if (!loading && hasMore) setOffset((prev) => prev + 20);
@@ -89,9 +128,12 @@ export default function AlertsTab() {
 
   const handleConfirm = useCallback(async (id: string) => {
     try {
-      await eventService.updateEventStatus(id, { status: "confirmed" });
+      // Use streamService to mark action executed (confirms violence)
+      await streamService.markActionExecuted(id);
       setEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, status: "confirmed" } : e)),
+        prev.map((e) =>
+          e.id === id ? { ...e, status: "ACTION_EXECUTED" as const } : e,
+        ),
       );
     } catch (err) {
       console.error("Failed to confirm:", err);
@@ -100,9 +142,12 @@ export default function AlertsTab() {
 
   const handleDismiss = useCallback(async (id: string) => {
     try {
-      await eventService.updateEventStatus(id, { status: "dismissed" });
+      // Use streamService to mark no action required (dismisses/false positive)
+      await streamService.markNoActionRequired(id);
       setEvents((prev) =>
-        prev.map((e) => (e.id === id ? { ...e, status: "dismissed" } : e)),
+        prev.map((e) =>
+          e.id === id ? { ...e, status: "NO_ACTION_REQUIRED" as const } : e,
+        ),
       );
     } catch (err) {
       console.error("Failed to dismiss:", err);
@@ -118,9 +163,18 @@ export default function AlertsTab() {
     setModalOpen(true);
   }, []);
 
-  const pendingCount = events.filter((e) => e.status === "pending").length;
-  const confirmedCount = events.filter((e) => e.status === "confirmed").length;
-  const dismissedCount = events.filter((e) => e.status === "dismissed").length;
+  const pendingCount = events.filter(
+    (e) => e.status === "PENDING" || e.status === "NEW",
+  ).length;
+  const confirmedCount = events.filter(
+    (e) => e.status === "ACTION_EXECUTED" || e.status === "CONFIRMED",
+  ).length;
+  const dismissedCount = events.filter(
+    (e) =>
+      e.status === "NO_ACTION_REQUIRED" ||
+      e.status === "DISMISSED" ||
+      e.status === "AUTO_DISMISSED",
+  ).length;
 
   return (
     <div>
