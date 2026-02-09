@@ -306,6 +306,10 @@ class Event(Base):
     clip_duration = Column(Integer, nullable=True)
     thumbnail_path = Column(Text, nullable=True)
     
+    # Person captures (JSON array of filenames)
+    person_images = Column(Text, nullable=True)  # JSON: ["file1.jpg", "file2.jpg"]
+    person_count = Column(Integer, default=0)
+    
     # Human review
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     reviewed_by = Column(String(255), nullable=True)
@@ -328,6 +332,13 @@ class Event(Base):
     )
     
     def to_dict(self) -> Dict[str, Any]:
+        import json
+        person_images_list = []
+        if self.person_images:
+            try:
+                person_images_list = json.loads(self.person_images)
+            except (json.JSONDecodeError, TypeError):
+                pass
         return {
             "id": str(self.id),
             "stream_id": str(self.stream_id) if self.stream_id else None,
@@ -344,6 +355,8 @@ class Event(Base):
             "clip_path": self.clip_path,
             "clip_duration": self.clip_duration,
             "thumbnail_path": self.thumbnail_path,
+            "person_images": person_images_list,
+            "person_count": self.person_count or 0,
             "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "reviewed_by": self.reviewed_by,
             "notes": self.notes,
@@ -680,9 +693,12 @@ class EventRepository:
         frame_count: int,
         clip_path: Optional[str] = None,
         clip_duration: Optional[int] = None,
-        thumbnail_path: Optional[str] = None
+        thumbnail_path: Optional[str] = None,
+        person_images: Optional[List[str]] = None,
+        person_count: int = 0
     ) -> Optional[Event]:
         """Finalize an event with end time and statistics."""
+        import json
         if not scores:
             return None
         
@@ -697,22 +713,28 @@ class EventRepository:
             
             duration_seconds = int((end_time - event.start_time).total_seconds())
             
+            values = {
+                "end_time": end_time,
+                "duration_seconds": duration_seconds,
+                "max_confidence": max(scores),
+                "avg_confidence": sum(scores) / len(scores),
+                "min_confidence": min(scores),
+                "frame_count": frame_count,
+                "severity": EventRepository.calculate_severity(max(scores)),
+                "clip_path": clip_path,
+                "clip_duration": clip_duration,
+                "thumbnail_path": thumbnail_path,
+                "updated_at": datetime.utcnow()
+            }
+            
+            if person_images:
+                values["person_images"] = json.dumps(person_images)
+                values["person_count"] = person_count
+            
             await session.execute(
                 update(Event)
                 .where(Event.id == uuid.UUID(event_id))
-                .values(
-                    end_time=end_time,
-                    duration_seconds=duration_seconds,
-                    max_confidence=max(scores),
-                    avg_confidence=sum(scores) / len(scores),
-                    min_confidence=min(scores),
-                    frame_count=frame_count,
-                    severity=EventRepository.calculate_severity(max(scores)),
-                    clip_path=clip_path,
-                    clip_duration=clip_duration,
-                    thumbnail_path=thumbnail_path,
-                    updated_at=datetime.utcnow()
-                )
+                .values(**values)
             )
             await session.commit()
             

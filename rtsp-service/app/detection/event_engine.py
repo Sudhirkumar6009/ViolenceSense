@@ -357,6 +357,8 @@ class EventDetectionEngine:
         clip_path = None
         thumbnail_path = None
         clip_duration = None
+        person_image_filenames = []
+        person_count = 0
         
         if self.state.clip_frames:
             # Get additional frames after event
@@ -381,6 +383,23 @@ class EventDetectionEngine:
                     self.stream_id,
                     self.state.current_event_id
                 )
+            
+            # Capture person images from event frames
+            try:
+                from app.detection.person_capture import person_capture_engine
+                raw_frames = [pkt.frame for pkt in all_frames if pkt.frame is not None]
+                if raw_frames:
+                    captures = person_capture_engine.capture_persons_from_frames(
+                        frames=raw_frames,
+                        event_id=self.state.current_event_id,
+                        stream_id=self.stream_id
+                    )
+                    person_image_filenames = [Path(c.image_path).name for c in captures]
+                    person_count = len(captures)
+                    if person_count > 0:
+                        logger.info(f"📸 Captured {person_count} person(s) from event {self.state.current_event_id}")
+            except Exception as e:
+                logger.warning(f"Person capture failed (non-critical): {e}")
         
         # Update event in database
         try:
@@ -391,7 +410,9 @@ class EventDetectionEngine:
                 frame_count=self.state.event_frame_count,
                 clip_path=clip_path,
                 clip_duration=clip_duration,
-                thumbnail_path=thumbnail_path
+                thumbnail_path=thumbnail_path,
+                person_images=person_image_filenames if person_image_filenames else None,
+                person_count=person_count
             )
             
             if event:

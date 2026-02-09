@@ -84,14 +84,11 @@ class InferencePipeline:
             
             # Run inference using model manager (handles both PyTorch and Keras)
             if self.model_manager.model_type == "keras":
-                # Keras model - convert to numpy and adjust shape
-                input_data = input_tensor.numpy()
-                
-                # Keras video models expect: (batch, frames, height, width, channels)
-                # Our tensor is: (batch, channels, frames, height, width)
-                # Convert from (B, C, T, H, W) to (B, T, H, W, C)
-                if input_data.ndim == 5 and input_data.shape[1] == 3:
-                    input_data = np.transpose(input_data, (0, 2, 3, 4, 1))
+                # Keras model needs different preprocessing than PyTorch
+                # MobileNetV2 expects pixels in [-1, 1], not ImageNet normalized
+                # Re-preprocess from raw frames for Keras
+                keras_input = frames.astype(np.float32) / 127.5 - 1.0  # (T, H, W, C) scaled to [-1, 1]
+                input_data = np.expand_dims(keras_input, axis=0)  # (1, T, H, W, C)
                 
                 logger.info(f"Keras input shape: {input_data.shape}")
                 

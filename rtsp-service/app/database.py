@@ -31,10 +31,12 @@ Base = declarative_base()
 
 class EventStatus(str, enum.Enum):
     """Event status enumeration."""
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    DISMISSED = "dismissed"
-    AUTO_DISMISSED = "auto_dismissed"
+    PENDING = "PENDING"
+    CONFIRMED = "CONFIRMED"
+    DISMISSED = "DISMISSED"
+    AUTO_DISMISSED = "AUTO_DISMISSED"
+    ACTION_EXECUTED = "ACTION_EXECUTED"
+    NO_ACTION_REQUIRED = "NO_ACTION_REQUIRED"
 
 
 class AlertSeverity(str, enum.Enum):

@@ -172,7 +172,12 @@ class LocalModelInference:
             logger.warning(f"Model warmup failed: {e}")
     
     def preprocess_frames(self, frames: List[np.ndarray], target_size: tuple = None) -> np.ndarray:
-        """Preprocess frames for model input."""
+        """Preprocess frames for model input.
+        
+        MobileNetV2 expects:
+        - RGB color order (OpenCV gives BGR, must convert)
+        - Pixel values in [-1, 1] range (not [0, 1])
+        """
         target_size = target_size or self.TARGET_SIZE
         processed = []
         
@@ -186,10 +191,13 @@ class LocalModelInference:
             frames = [frames[i] for i in indices]
         
         for frame in frames:
+            # Convert BGR (OpenCV default) to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             # Resize to 224x224
-            resized = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
-            # Normalize to [0, 1]
-            normalized = resized.astype(np.float32) / 255.0
+            resized = cv2.resize(rgb_frame, target_size, interpolation=cv2.INTER_AREA)
+            # MobileNetV2 preprocess: scale to [-1, 1]
+            # This matches tf.keras.applications.mobilenet_v2.preprocess_input
+            normalized = resized.astype(np.float32) / 127.5 - 1.0
             processed.append(normalized)
         
         # Stack frames and add batch dimension
@@ -337,8 +345,18 @@ class MLServiceInference:
 
 class InferencePipeline:
     """
-    Continuous inference pipeline with sliding window.
-    Processes frames from stream and generates scores.
+    CCTV-style continuous inference pipeline.
+    
+    Checks every frame by using a sliding window of the last 16 consecutive 
+    frames. At each inference cycle, the window has advanced by a few frames
+    (depending on FPS and inference interval), giving continuous, overlapping
+    coverage like a professional CCTV system.
+    
+    At 30fps camera + 100ms inference interval:
+    - ~10 inferences/second
+    - Window advances ~3 frames between cycles 
+    - Every single frame participates in ~5 inference windows
+    - 16 consecutive frames = ~0.53s of video per inference
     """
     
     def __init__(
@@ -370,17 +388,29 @@ class InferencePipeline:
         
         # Scoring history for smoothing
         self.score_history: List[float] = []
-        self.max_history_size = 10
+        self.max_history_size = 20  # Keep more history for CCTV-style smoothing
+        
+        # Track last processed frame to detect new frames
+        self._last_frame_number: int = -1
     
     async def _inference_loop(self):
-        """Main inference loop - runs at configured FPS independently of display."""
-        logger.info(
-            f"Starting inference pipeline for stream {self.stream.config.name} "
-            f"(interval: {settings.inference_interval_ms}ms = "
-            f"{1000 / settings.inference_interval_ms:.1f} inferences/sec)"
-        )
+        """
+        CCTV-style continuous inference loop.
         
+        Runs at high frequency, always using the LAST 16 consecutive frames
+        from the camera. This ensures every frame is checked as part of at
+        least one inference window, mimicking how professional CCTV analytics
+        continuously monitor the feed.
+        """
+        required_frames = LocalModelInference.EXPECTED_FRAMES  # 16
         interval_seconds = settings.inference_interval_ms / 1000.0
+        
+        logger.info(
+            f"🎬 Starting CCTV-style continuous inference for [{self.stream.config.name}] "
+            f"(interval: {settings.inference_interval_ms}ms = "
+            f"{1000 / settings.inference_interval_ms:.1f} checks/sec, "
+            f"window: {required_frames} consecutive frames)"
+        )
         
         while self.is_running:
             try:
@@ -389,24 +419,31 @@ class InferencePipeline:
                     await asyncio.sleep(0.5)
                     continue
                 
-                # Get sampled frames from sliding window
-                frames = self.stream.get_sampled_frames(settings.frame_sample_rate)
+                # Get the LAST 16 CONSECUTIVE frames — no sampling, no gaps
+                frames = self.stream.get_consecutive_frames(required_frames)
                 
-                if len(frames) < settings.frame_sample_rate // 2:
-                    # Not enough frames yet
+                if len(frames) < required_frames:
+                    # Not enough frames accumulated yet (camera just started)
                     await asyncio.sleep(interval_seconds)
                     continue
+                
+                # Skip if no new frames since last inference (avoid redundant work)
+                latest_frame_num = frames[-1].frame_number
+                if latest_frame_num == self._last_frame_number:
+                    await asyncio.sleep(0.01)  # Brief wait for new frame
+                    continue
+                self._last_frame_number = latest_frame_num
                 
                 # Time the full cycle: inference + sleep = constant interval
                 cycle_start = asyncio.get_event_loop().time()
                 
-                # Run inference
+                # Run inference on consecutive frames
                 result = await self._run_inference(frames)
                 
                 if result and self.on_result:
                     self.on_result(result)
                 
-                # Sleep for remaining interval time (subtract inference duration)
+                # Sleep for remaining interval time
                 elapsed = asyncio.get_event_loop().time() - cycle_start
                 sleep_time = max(0, interval_seconds - elapsed)
                 if sleep_time > 0:
@@ -416,11 +453,12 @@ class InferencePipeline:
                 break
             except Exception as e:
                 logger.error(f"Inference error: {e}")
+                await asyncio.sleep(interval_seconds)
         
         logger.info(f"Inference pipeline stopped for stream {self.stream.config.name}")
     
     async def _run_inference(self, frames: List[FrameData]) -> Optional[InferenceResult]:
-        """Run inference on frames."""
+        """Run inference on consecutive frames (CCTV-style)."""
         if not frames:
             return None
         
@@ -447,6 +485,9 @@ class InferencePipeline:
             if len(self.score_history) > self.max_history_size:
                 self.score_history.pop(0)
             
+            # Compute window span from actual frame timestamps
+            window_span_ms = (frames[-1].timestamp - frames[0].timestamp).total_seconds() * 1000
+            
             # Create result
             result = InferenceResult(
                 violence_score=violence_score,
@@ -462,21 +503,26 @@ class InferencePipeline:
             # Update state
             self.state.last_inference_time = result.timestamp
             self.state.recent_scores.append(violence_score)
-            if len(self.state.recent_scores) > 20:
+            if len(self.state.recent_scores) > 30:
                 self.state.recent_scores.pop(0)
             
-            # Log scores periodically (every 5th inference) or always when violent
+            # Log scores — every score when violent, periodic otherwise
             score_count = len(self.state.recent_scores)
             if violence_score >= settings.violence_threshold:
+                avg = sum(self.state.recent_scores[-5:]) / min(5, len(self.state.recent_scores))
                 logger.warning(
                     f"🔴 VIOLENT [{self.stream.config.name}] "
-                    f"score={violence_score:.2%} ({inference_time:.0f}ms)"
+                    f"score={violence_score:.1%} avg5={avg:.1%} "
+                    f"frames={len(frames)} span={window_span_ms:.0f}ms "
+                    f"({inference_time:.0f}ms)"
                 )
-            elif score_count % 5 == 0:
+            elif score_count % 10 == 0:
                 avg = sum(self.state.recent_scores) / len(self.state.recent_scores)
                 logger.info(
                     f"📊 [{self.stream.config.name}] "
-                    f"score={violence_score:.2%} avg={avg:.2%} ({inference_time:.0f}ms)"
+                    f"score={violence_score:.1%} avg={avg:.1%} "
+                    f"frames={len(frames)} span={window_span_ms:.0f}ms "
+                    f"({inference_time:.0f}ms)"
                 )
             
             return result

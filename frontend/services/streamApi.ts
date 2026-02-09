@@ -177,6 +177,34 @@ class StreamService {
     }
   }
 
+  // Mark event as action executed (Yes - took action)
+  async markActionExecuted(
+    eventId: string | number,
+  ): Promise<ApiResponse<void>> {
+    try {
+      const response = await this.client.post(
+        `/events/${eventId}/action-executed`,
+      );
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Mark event as no action required (No - no action needed)
+  async markNoActionRequired(
+    eventId: string | number,
+  ): Promise<ApiResponse<void>> {
+    try {
+      const response = await this.client.post(
+        `/events/${eventId}/no-action-required`,
+      );
+      return response.data;
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
   // Get clip URL (served from RTSP service)
   getClipUrl(clipFilename: string): string {
     return `${RTSP_SERVICE_URL}/api/v1/clips/${clipFilename}`;
@@ -185,6 +213,11 @@ class StreamService {
   // Get thumbnail URL (served from RTSP service)
   getThumbnailUrl(thumbnailFilename: string): string {
     return `${RTSP_SERVICE_URL}/api/v1/thumbnails/${thumbnailFilename}`;
+  }
+
+  // Get person image URL (served from RTSP service)
+  getPersonImageUrl(filename: string): string {
+    return `${RTSP_SERVICE_URL}/api/v1/person-images/${filename}`;
   }
 }
 

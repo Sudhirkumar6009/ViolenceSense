@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { Video, Prediction, ModelStatusResponse } from "@/types";
+import { Video, Prediction, ModelStatusResponse, Stream } from "@/types";
 
 interface AppState {
   // Video state
@@ -29,6 +29,14 @@ interface AppState {
     message: string,
   ) => void;
   clearNotification: () => void;
+
+  // Streams cache (persists across tab switches)
+  streams: Stream[];
+  streamsLoaded: boolean;
+  streamsError: string | null;
+  setStreams: (streams: Stream[]) => void;
+  setStreamsError: (error: string | null) => void;
+  updateStreamStatus: (streamId: string, status: Stream["status"]) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -56,4 +64,18 @@ export const useAppStore = create<AppState>((set) => ({
   notification: null,
   showNotification: (type, message) => set({ notification: { type, message } }),
   clearNotification: () => set({ notification: null }),
+
+  // Streams cache
+  streams: [],
+  streamsLoaded: false,
+  streamsError: null,
+  setStreams: (streams) =>
+    set({ streams, streamsLoaded: true, streamsError: null }),
+  setStreamsError: (error) => set({ streamsError: error }),
+  updateStreamStatus: (streamId, status) =>
+    set((state) => ({
+      streams: state.streams.map((s) =>
+        String(s.id) === String(streamId) ? { ...s, status } : s,
+      ),
+    })),
 }));

@@ -37,8 +37,16 @@ export function StreamCard({
   const [viewMode, setViewMode] = useState<"card" | "video">("card");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [imageLoading, setImageLoading] = useState(true);
+  const [streamKey, setStreamKey] = useState(Date.now()); // Cache-busting key
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Helper to check if stream is actively running
+  const isStreamActive =
+    stream.status === "running" || stream.status === "online";
 
   // Handle fullscreen changes
   useEffect(() => {
@@ -50,12 +58,105 @@ export function StreamCard({
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
-  // Reset image error when stream status changes
+  // Reset image state and refresh when stream status changes
   useEffect(() => {
-    if (stream.status === "running") {
+    if (isStreamActive) {
       setImageError(false);
+      setImageLoading(true);
+      // Generate new cache-busting key to force fresh stream load
+      setStreamKey(Date.now());
     }
-  }, [stream.status]);
+
+    // Cleanup retry timeout on unmount or status change
+    return () => {
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current);
+        connectTimeoutRef.current = null;
+      }
+    };
+  }, [stream.status, isStreamActive]);
+
+  // When switching into video mode, force a fresh MJPEG connection attempt.
+  useEffect(() => {
+    if (viewMode !== "video" || !isStreamActive) return;
+    setImageError(false);
+    setImageLoading(true);
+    setStreamKey(Date.now());
+  }, [viewMode, isStreamActive, stream.id]);
+
+  // Poll for MJPEG stream loading - onLoad doesn't reliably fire for MJPEG streams
+  useEffect(() => {
+    if (!isStreamActive || viewMode !== "video" || !imageLoading) return;
+
+    const checkLoaded = () => {
+      if (imgRef.current && imgRef.current.naturalWidth > 0) {
+        setImageLoading(false);
+        setImageError(false);
+      }
+    };
+
+    // Check immediately and then poll every 200ms
+    const pollInterval = setInterval(checkLoaded, 200);
+    checkLoaded();
+
+    // If we still don't have a decoded frame after a reasonable time, surface an error
+    // instead of hiding the loader and leaving a black box.
+    connectTimeoutRef.current = setTimeout(() => {
+      if (imgRef.current && imgRef.current.naturalWidth <= 0) {
+        setImageLoading(false);
+        setImageError(true);
+      }
+    }, 12000);
+
+    return () => {
+      clearInterval(pollInterval);
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current);
+        connectTimeoutRef.current = null;
+      }
+    };
+  }, [isStreamActive, viewMode, imageLoading, imageError, streamKey]);
+
+  // Handle image load success (may not fire for MJPEG, but keep as backup)
+  const handleImageLoad = useCallback(() => {
+    setImageLoading(false);
+    setImageError(false);
+    // Clear any pending retry
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Handle image error with auto-retry
+  const handleImageError = useCallback(() => {
+    // For MJPEG, browsers may emit an error during initial connect.
+    // Retry once quickly, then fall back to an explicit error state.
+    if (!retryTimeoutRef.current) {
+      retryTimeoutRef.current = setTimeout(() => {
+        retryTimeoutRef.current = null;
+        if (imgRef.current && imgRef.current.naturalWidth > 0) {
+          setImageLoading(false);
+          setImageError(false);
+          return;
+        }
+
+        // Retry once with a fresh cache-busting key
+        if (isStreamActive) {
+          setStreamKey(Date.now());
+          setImageLoading(true);
+          return;
+        }
+
+        setImageLoading(false);
+        setImageError(true);
+      }, 1500);
+    }
+  }, [isStreamActive]);
 
   const handleStart = useCallback(
     async (e: React.MouseEvent) => {
@@ -111,8 +212,15 @@ export function StreamCard({
 
   const toggleViewMode = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    setViewMode((prev) => (prev === "card" ? "video" : "card"));
-    setImageError(false);
+    setViewMode((prev) => {
+      const next = prev === "card" ? "video" : "card";
+      if (next === "video") {
+        setImageError(false);
+        setImageLoading(true);
+        setStreamKey(Date.now());
+      }
+      return next;
+    });
   }, []);
 
   const toggleFullscreen = useCallback(async (e: React.MouseEvent) => {
@@ -134,12 +242,15 @@ export function StreamCard({
   const statusColors: Record<string, string> = {
     running: "bg-green-500",
     online: "bg-green-500",
+    connected: "bg-green-500", // Backward compatibility
     stopped: "bg-gray-400",
     offline: "bg-gray-400",
+    disconnected: "bg-gray-400", // Backward compatibility
     error: "bg-red-500",
     starting: "bg-yellow-500",
     stopping: "bg-yellow-500",
     connecting: "bg-yellow-500",
+    reconnecting: "bg-yellow-500", // Reconnecting status
   };
 
   // Violence score indicator
@@ -158,9 +269,9 @@ export function StreamCard({
         ? "bg-yellow-500"
         : "bg-green-500";
 
-  // MJPEG stream URL
-  const mjpegUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/mjpeg?fps=10`;
-  const snapshotUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/snapshot`;
+  // MJPEG stream URL with cache-busting
+  const mjpegUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/mjpeg?fps=15&_t=${streamKey}`;
+  const snapshotUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/snapshot?_t=${streamKey}`;
 
   return (
     <motion.div
@@ -192,7 +303,7 @@ export function StreamCard({
           </div>
           <div className="flex items-center gap-2">
             {/* View Toggle Button */}
-            {stream.status === "running" && (
+            {isStreamActive && (
               <button
                 onClick={toggleViewMode}
                 className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-300 
@@ -233,7 +344,7 @@ export function StreamCard({
               </button>
             )}
             {/* Fullscreen Button (only in video mode) */}
-            {viewMode === "video" && stream.status === "running" && (
+            {viewMode === "video" && isStreamActive && (
               <button
                 onClick={toggleFullscreen}
                 className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-300 
@@ -287,7 +398,7 @@ export function StreamCard({
 
       {/* Video Preview or Card Content */}
       <AnimatePresence mode="wait">
-        {viewMode === "video" && stream.status === "running" ? (
+        {viewMode === "video" && isStreamActive ? (
           <motion.div
             key="video"
             initial={{ opacity: 0 }}
@@ -296,13 +407,25 @@ export function StreamCard({
             className={`relative bg-black ${isFullscreen ? "flex-1" : "aspect-video"}`}
           >
             {!imageError ? (
-              <img
-                ref={imgRef}
-                src={mjpegUrl}
-                alt={`${stream.name} live feed`}
-                className="w-full h-full object-contain"
-                onError={() => setImageError(true)}
-              />
+              <>
+                {/* Loading indicator */}
+                {imageLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-10 w-10 border-2 border-blue-500 border-t-transparent mx-auto mb-2" />
+                      <p className="text-sm text-gray-400">Loading stream...</p>
+                    </div>
+                  </div>
+                )}
+                <img
+                  ref={imgRef}
+                  src={mjpegUrl}
+                  alt={`${stream.name} live feed`}
+                  className={`w-full h-full object-contain ${imageLoading ? "opacity-0" : "opacity-100"} transition-opacity duration-300`}
+                  onLoad={handleImageLoad}
+                  onError={handleImageError}
+                />
+              </>
             ) : (
               <div className="absolute inset-0 flex items-center justify-center text-gray-400">
                 <div className="text-center">
@@ -325,6 +448,8 @@ export function StreamCard({
                     onClick={(e) => {
                       e.stopPropagation();
                       setImageError(false);
+                      setImageLoading(true);
+                      setStreamKey(Date.now()); // Force fresh load
                     }}
                     className="mt-2 text-xs text-blue-400 hover:text-blue-300"
                   >
@@ -361,7 +486,7 @@ export function StreamCard({
             exit={{ opacity: 0 }}
           >
             {/* Violence Score */}
-            {stream.status === "running" && (
+            {isStreamActive && (
               <div className="p-4 border-b border-gray-700">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-400">Violence Score</span>
@@ -429,7 +554,7 @@ export function StreamCard({
           >
             {loading ? "Starting..." : "Start"}
           </button>
-        ) : stream.status === "running" ? (
+        ) : isStreamActive ? (
           <button
             onClick={handleStop}
             disabled={loading}
@@ -470,7 +595,7 @@ export function StreamCard({
         {onDelete && (
           <button
             onClick={handleDelete}
-            disabled={loading || stream.status === "running"}
+            disabled={loading || isStreamActive}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-red-400 
                        rounded-lg text-sm transition-colors disabled:opacity-50"
           >
@@ -490,6 +615,8 @@ export function StreamCardCompact({
 }: Pick<StreamCardProps, "stream" | "score" | "onClick">) {
   const violenceScore = score?.violence_score ?? 0;
   const isAlert = violenceScore > 0.65;
+  const isStreamActive =
+    stream.status === "running" || stream.status === "online";
 
   const statusColors: Record<string, string> = {
     running: "bg-green-500",
@@ -500,6 +627,7 @@ export function StreamCardCompact({
     starting: "bg-yellow-500",
     stopping: "bg-yellow-500",
     connecting: "bg-yellow-500",
+    reconnecting: "bg-yellow-500",
   };
 
   return (
@@ -518,7 +646,7 @@ export function StreamCardCompact({
       <span className="font-medium text-white flex-1 truncate">
         {stream.name}
       </span>
-      {stream.status === "running" && (
+      {isStreamActive && (
         <span
           className={`text-sm font-semibold ${isAlert ? "text-red-500" : "text-gray-400"}`}
         >

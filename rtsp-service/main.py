@@ -1,153 +1,657 @@
 """
-RTSP Live Stream Service - Main Application
-============================================
-FastAPI application for RTSP stream ingestion and violence detection
+Simple RTSP Stream Service with Violence Detection
+===================================================
+Minimal FastAPI application for RTSP stream playback with real-time ML inference.
 """
 
 import sys
+import asyncio
+import threading
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Dict, List, Optional
+from datetime import datetime
+from dataclasses import dataclass
+from collections import deque
 
+import cv2
+import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from loguru import logger
-
-# Add app to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from app.config import settings
-from app.database import init_db
-from app.manager import stream_manager
-from app.api.routes import router, active_connections, broadcast_message
 
 
 # Configure logging
 logger.remove()
-logger.add(
-    sys.stderr,
-    level=settings.log_level,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
-)
-logger.add(
-    settings.log_file,
-    rotation="10 MB",
-    retention="7 days",
-    level=settings.log_level
-)
+logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
 
+
+# ============== Model Configuration ==============
+MODEL_PATH = Path(__file__).parent / ".." / "ml-service" / "models" / "violence_model_legacy.h5"
+EXPECTED_FRAMES = 16
+TARGET_SIZE = (224, 224)
+INFERENCE_INTERVAL = 0.5  # Run inference every 0.5 seconds
+VIOLENCE_THRESHOLD = 0.5
+
+
+# ============== Violence Detection Model ==============
+
+class ViolenceDetector:
+    """Loads and runs the violence detection model."""
+    
+    def __init__(self):
+        self.model = None
+        self.is_loaded = False
+        self._lock = threading.Lock()
+        self._load_model()
+    
+    def _load_model(self):
+        """Load the TensorFlow model."""
+        try:
+            model_path = MODEL_PATH.resolve()
+            if not model_path.exists():
+                logger.warning(f"Model not found at {model_path}")
+                return
+            
+            import tensorflow as tf
+            
+            # Suppress TF warnings
+            tf.get_logger().setLevel('ERROR')
+            
+            # Try direct load first
+            try:
+                self.model = tf.keras.models.load_model(str(model_path), compile=False)
+                self.is_loaded = True
+                logger.info(f"✅ Loaded violence detection model from {model_path}")
+                return
+            except Exception as e:
+                logger.warning(f"Direct load failed: {str(e)[:80]}, trying fallback...")
+            
+            # Fallback: Build architecture and load weights
+            from tensorflow import keras
+            from tensorflow.keras import layers
+            
+            input_shape = (EXPECTED_FRAMES, *TARGET_SIZE, 3)
+            inputs = keras.Input(shape=input_shape)
+            
+            base_model = keras.applications.MobileNetV2(
+                weights=None, include_top=False, input_shape=(224, 224, 3)
+            )
+            
+            x = layers.TimeDistributed(base_model)(inputs)
+            x = layers.TimeDistributed(layers.GlobalAveragePooling2D())(x)
+            x = layers.LSTM(64)(x)
+            x = layers.Dense(64, activation='relu')(x)
+            outputs = layers.Dense(1, activation='sigmoid')(x)
+            
+            self.model = keras.Model(inputs=inputs, outputs=outputs)
+            self.model.load_weights(str(model_path))
+            self.is_loaded = True
+            logger.info(f"✅ Loaded model weights from {model_path}")
+            
+            # Warmup
+            dummy = np.zeros((1, EXPECTED_FRAMES, *TARGET_SIZE, 3), dtype=np.float32)
+            self.model.predict(dummy, verbose=0)
+            logger.info("✅ Model warmup complete")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load model: {e}")
+            self.is_loaded = False
+    
+    def predict(self, frames: List[np.ndarray]) -> Optional[dict]:
+        """Run prediction on frames."""
+        if not self.is_loaded or self.model is None:
+            return None
+        
+        with self._lock:
+            try:
+                # Preprocess frames
+                processed = self._preprocess(frames)
+                
+                # Run inference
+                start = time.time()
+                prediction = self.model.predict(processed, verbose=0)
+                inference_time = (time.time() - start) * 1000
+                
+                # Parse result
+                if prediction.shape[-1] == 2:
+                    violence_score = float(prediction[0][0])
+                else:
+                    violence_score = float(prediction[0][0])
+                
+                return {
+                    "violence_score": violence_score,
+                    "non_violence_score": 1.0 - violence_score,
+                    "is_violent": violence_score >= VIOLENCE_THRESHOLD,
+                    "inference_time_ms": inference_time,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            except Exception as e:
+                logger.error(f"Prediction error: {e}")
+                return None
+    
+    def _preprocess(self, frames: List[np.ndarray]) -> np.ndarray:
+        """Preprocess frames for model input."""
+        # Ensure we have exactly EXPECTED_FRAMES
+        if len(frames) < EXPECTED_FRAMES:
+            frames = list(frames) + [frames[-1]] * (EXPECTED_FRAMES - len(frames))
+        elif len(frames) > EXPECTED_FRAMES:
+            indices = np.linspace(0, len(frames) - 1, EXPECTED_FRAMES, dtype=int)
+            frames = [frames[i] for i in indices]
+        
+        processed = []
+        for frame in frames:
+            resized = cv2.resize(frame, TARGET_SIZE, interpolation=cv2.INTER_AREA)
+            normalized = resized.astype(np.float32) / 255.0
+            processed.append(normalized)
+        
+        stacked = np.stack(processed, axis=0)
+        return np.expand_dims(stacked, axis=0)
+
+
+# Global detector instance
+detector = ViolenceDetector()
+
+
+# ============== Simple Stream Class ==============
+
+@dataclass
+class StreamInfo:
+    id: int
+    name: str
+    url: str
+    is_running: bool = False
+    is_connected: bool = False
+    frame_count: int = 0
+    error: Optional[str] = None
+
+
+class SimpleRTSPStream:
+    """RTSP stream handler with violence detection."""
+    
+    def __init__(self, stream_id: int, name: str, url: str):
+        self.id = stream_id
+        self.name = name
+        self.url = url
+        self.capture: Optional[cv2.VideoCapture] = None
+        self.is_running = False
+        self.is_connected = False
+        self.frame_count = 0
+        self.last_frame: Optional[np.ndarray] = None
+        self.error: Optional[str] = None
+        self._capture_thread: Optional[threading.Thread] = None
+        self._inference_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        
+        # Frame buffer for inference (sliding window)
+        self.frame_buffer: deque = deque(maxlen=60)  # ~2 seconds at 30fps
+        
+        # Latest prediction
+        self.last_prediction: Optional[dict] = None
+        self.prediction_callback = None  # Set by manager
+    
+    def start(self):
+        """Start the stream capture and inference."""
+        if self.is_running:
+            return
+        
+        self.is_running = True
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+        
+        # Start inference thread
+        self._inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._inference_thread.start()
+        
+        logger.info(f"Started stream with inference: {self.name} ({self.url})")
+    
+    def stop(self):
+        """Stop the stream capture."""
+        self.is_running = False
+        if self._capture_thread:
+            self._capture_thread.join(timeout=2)
+        if self._inference_thread:
+            self._inference_thread.join(timeout=2)
+        if self.capture:
+            self.capture.release()
+            self.capture = None
+        self.is_connected = False
+        logger.info(f"Stopped stream: {self.name}")
+    
+    def _capture_loop(self):
+        """Main capture loop running in background thread."""
+        while self.is_running:
+            try:
+                if self.capture is None or not self.capture.isOpened():
+                    self._connect()
+                    continue
+                
+                ret, frame = self.capture.read()
+                if ret:
+                    with self._lock:
+                        self.last_frame = frame
+                        self.frame_buffer.append(frame.copy())
+                        self.frame_count += 1
+                        self.is_connected = True
+                        self.error = None
+                else:
+                    self.is_connected = False
+                    self._connect()  # Try reconnecting
+                    
+            except Exception as e:
+                self.error = str(e)
+                self.is_connected = False
+                logger.error(f"Stream error ({self.name}): {e}")
+                time.sleep(1)
+    
+    def _inference_loop(self):
+        """Run inference periodically on buffered frames."""
+        while self.is_running:
+            try:
+                time.sleep(INFERENCE_INTERVAL)
+                
+                if not self.is_connected or not detector.is_loaded:
+                    continue
+                
+                # Get frames from buffer
+                with self._lock:
+                    if len(self.frame_buffer) < EXPECTED_FRAMES // 2:
+                        continue
+                    frames = list(self.frame_buffer)
+                
+                # Run prediction
+                result = detector.predict(frames)
+                
+                if result:
+                    result["stream_id"] = str(self.id)
+                    result["stream_name"] = self.name
+                    self.last_prediction = result
+                    
+                    # Log result
+                    score = result["violence_score"]
+                    if score >= VIOLENCE_THRESHOLD:
+                        logger.warning(f"🔴 VIOLENCE [{self.name}] score={score:.1%}")
+                    else:
+                        # Log every 5th normal result
+                        if self.frame_count % 150 == 0:  # ~5 seconds
+                            logger.info(f"📊 [{self.name}] score={score:.1%}")
+                    
+                    # Trigger callback for WebSocket broadcast
+                    if self.prediction_callback:
+                        self.prediction_callback(result)
+                        
+            except Exception as e:
+                logger.error(f"Inference error ({self.name}): {e}")
+    
+    def _connect(self):
+        """Connect to the RTSP stream."""
+        try:
+            if self.capture:
+                self.capture.release()
+            
+            logger.info(f"Connecting to: {self.url}")
+            self.capture = cv2.VideoCapture(self.url)
+            
+            # Set buffer size to reduce latency
+            self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            if self.capture.isOpened():
+                self.is_connected = True
+                logger.info(f"Connected to: {self.name}")
+            else:
+                self.is_connected = False
+                self.error = "Failed to open stream"
+                import time
+                time.sleep(2)  # Wait before retry
+                
+        except Exception as e:
+            self.error = str(e)
+            self.is_connected = False
+            import time
+            time.sleep(2)
+    
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Get the latest frame."""
+        with self._lock:
+            return self.last_frame.copy() if self.last_frame is not None else None
+    
+    def get_jpeg(self) -> Optional[bytes]:
+        """Get the latest frame as JPEG bytes."""
+        frame = self.get_frame()
+        if frame is None:
+            return None
+        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return jpeg.tobytes()
+    
+    def get_status(self) -> dict:
+        """Get stream status in frontend-compatible format."""
+        # Determine status string
+        if self.is_running and self.is_connected:
+            status = "running"
+        elif self.is_running and not self.is_connected:
+            status = "connecting"
+        elif self.error:
+            status = "error"
+        else:
+            status = "stopped"
+        
+        return {
+            "id": str(self.id),  # Frontend expects string ID
+            "name": self.name,
+            "url": self.url,
+            "rtsp_url": self.url,  # Frontend also uses rtsp_url
+            "stream_type": "rtsp",
+            "is_active": True,
+            "is_running": self.is_running,
+            "is_connected": self.is_connected,
+            "status": status,
+            "frame_count": self.frame_count,
+            "error_message": self.error,
+            "inference_enabled": detector.is_loaded,
+            "last_prediction": self.last_prediction
+        }
+
+
+# ============== Stream Manager ==============
+
+# Global list for WebSocket connections (defined early for callback access)
+active_connections: List[WebSocket] = []
+main_event_loop = None  # Will store the main event loop reference
+
+
+def broadcast_prediction(prediction: dict):
+    """Broadcast prediction to all WebSocket clients."""
+    global main_event_loop
+    if not main_event_loop or not active_connections:
+        return
+        
+    import json
+    message = json.dumps({
+        "type": "inference_score",
+        "data": prediction
+    })
+    
+    # Queue broadcast for async handling using the stored event loop
+    for ws in active_connections[:]:  # Copy list to avoid modification during iteration
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ws.send_text(message),
+                main_event_loop
+            )
+        except:
+            pass
+
+
+class StreamManager:
+    """Manages multiple RTSP streams with violence detection."""
+    
+    def __init__(self):
+        self.streams: Dict[int, SimpleRTSPStream] = {}
+        self._next_id = 1
+    
+    def add_stream(self, name: str, url: str, auto_start: bool = True) -> int:
+        """Add a new stream."""
+        stream_id = self._next_id
+        self._next_id += 1
+        
+        stream = SimpleRTSPStream(stream_id, name, url)
+        stream.prediction_callback = broadcast_prediction  # Set callback
+        self.streams[stream_id] = stream
+        
+        if auto_start:
+            stream.start()
+        
+        return stream_id
+    
+    def remove_stream(self, stream_id: int):
+        """Remove a stream."""
+        if stream_id in self.streams:
+            self.streams[stream_id].stop()
+            del self.streams[stream_id]
+    
+    def start_stream(self, stream_id: int):
+        """Start a stream."""
+        if stream_id in self.streams:
+            self.streams[stream_id].start()
+    
+    def stop_stream(self, stream_id: int):
+        """Stop a stream."""
+        if stream_id in self.streams:
+            self.streams[stream_id].stop()
+    
+    def get_stream(self, stream_id: int) -> Optional[SimpleRTSPStream]:
+        """Get a stream by ID (handles both int and string)."""
+        if isinstance(stream_id, str):
+            stream_id = int(stream_id)
+        return self.streams.get(stream_id)
+    
+    def list_streams(self) -> List[dict]:
+        """List all streams with status."""
+        return [s.get_status() for s in self.streams.values()]
+    
+    def shutdown(self):
+        """Stop all streams."""
+        for stream in self.streams.values():
+            stream.stop()
+
+
+# Global stream manager
+stream_manager = StreamManager()
+
+
+# ============== FastAPI App ==============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup
-    logger.info("🚀 Starting RTSP Live Stream Service...")
-    
-    # Initialize database
-    await init_db()
-    logger.info("✅ Database initialized")
-    
-    # Initialize stream manager
-    await stream_manager.initialize()
-    logger.info("✅ Stream manager initialized")
-    
+    global main_event_loop
+    main_event_loop = asyncio.get_running_loop()
+    logger.info("🚀 Starting Simple RTSP Service...")
     yield
-    
-    # Shutdown
-    logger.info("🛑 Shutting down RTSP Live Stream Service...")
-    await stream_manager.shutdown()
-    logger.info("✅ Shutdown complete")
+    logger.info("🛑 Shutting down...")
+    stream_manager.shutdown()
 
 
-# Create FastAPI application
 app = FastAPI(
-    title="ViolenceSense RTSP Live Stream Service",
-    description="""
-    Real-time RTSP stream ingestion and violence detection service.
-    
-    ## Features
-    - RTSP/RTMP/Webcam stream ingestion
-    - Sliding window continuous inference
-    - Event detection with threshold + duration rules
-    - Clip recording and storage
-    - Real-time WebSocket updates
-    - Alert dashboard API
-    """,
+    title="Simple RTSP Stream Service",
+    description="Minimal RTSP stream playback service",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
     lifespan=lifespan
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for local development
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files for clips
-clips_path = Path(settings.clips_dir)
-clips_path.mkdir(parents=True, exist_ok=True)
-app.mount("/static/clips", StaticFiles(directory=str(clips_path)), name="clips")
 
-# Include API routes
-app.include_router(router, prefix="/api/v1", tags=["API"])
+# ============== API Models ==============
+
+class StreamCreate(BaseModel):
+    name: str = Field(..., description="Stream name")
+    url: str = Field(..., description="RTSP URL")
+    auto_start: bool = Field(default=True, description="Auto-start stream")
 
 
-# Root-level WebSocket endpoint (for frontend connecting to /ws)
-@app.websocket("/ws")
-async def websocket_root(websocket: WebSocket):
-    """Root WebSocket endpoint for real-time updates."""
-    await websocket.accept()
-    active_connections.append(websocket)
-    
-    # Set broadcast callback on manager
-    stream_manager.set_broadcast_callback(broadcast_message)
-    
-    try:
-        while True:
-            # Keep connection alive and handle incoming messages
-            data = await websocket.receive_text()
-            
-            # Handle client messages (e.g., ping)
-            if data == "ping":
-                await websocket.send_text("pong")
-                
-    except WebSocketDisconnect:
-        if websocket in active_connections:
-            active_connections.remove(websocket)
-    except Exception as e:
-        logger.warning(f"WebSocket error: {e}")
-        if websocket in active_connections:
-            active_connections.remove(websocket)
-
+# ============== API Routes ==============
 
 @app.get("/")
 async def root():
-    """Root endpoint with service information."""
+    return {"service": "Simple RTSP Stream Service", "status": "running"}
+
+
+@app.get("/api/v1/health")
+async def health():
+    return {"status": "healthy", "streams_count": len(stream_manager.streams)}
+
+
+@app.post("/api/v1/streams")
+async def create_stream(request: StreamCreate):
+    """Add a new RTSP stream."""
+    stream_id = stream_manager.add_stream(
+        name=request.name,
+        url=request.url,
+        auto_start=request.auto_start
+    )
+    return {"success": True, "stream_id": str(stream_id)}
+
+
+@app.get("/api/v1/streams")
+async def list_streams():
+    """List all streams."""
+    return {"success": True, "data": stream_manager.list_streams()}
+
+
+@app.get("/api/v1/streams/{stream_id}")
+async def get_stream(stream_id: int):
+    """Get stream status."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return {"success": True, "data": stream.get_status()}
+
+
+@app.post("/api/v1/streams/{stream_id}/start")
+async def start_stream(stream_id: int):
+    """Start a stream."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    stream.start()
+    return {"success": True, "message": f"Stream {stream_id} started"}
+
+
+@app.post("/api/v1/streams/{stream_id}/stop")
+async def stop_stream(stream_id: int):
+    """Stop a stream."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    stream.stop()
+    return {"success": True, "message": f"Stream {stream_id} stopped"}
+
+
+@app.delete("/api/v1/streams/{stream_id}")
+async def delete_stream(stream_id: int):
+    """Delete a stream."""
+    if stream_id not in stream_manager.streams:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    stream_manager.remove_stream(stream_id)
+    return {"success": True, "message": f"Stream {stream_id} deleted"}
+
+
+@app.get("/api/v1/streams/{stream_id}/frame")
+async def get_frame(stream_id: int):
+    """Get latest frame as JPEG image."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    
+    jpeg = stream.get_jpeg()
+    if jpeg is None:
+        raise HTTPException(status_code=503, detail="No frame available")
+    
+    return StreamingResponse(
+        iter([jpeg]),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"}
+    )
+
+
+@app.get("/api/v1/streams/{stream_id}/mjpeg")
+async def mjpeg_stream(stream_id: int):
+    """Get MJPEG video stream."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    
+    async def generate():
+        while True:
+            jpeg = stream.get_jpeg()
+            if jpeg:
+                yield (
+                    b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n'
+                )
+            await asyncio.sleep(0.033)  # ~30 FPS
+    
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.get("/api/v1/streams/{stream_id}/prediction")
+async def get_prediction(stream_id: int):
+    """Get latest violence prediction for a stream."""
+    stream = stream_manager.get_stream(stream_id)
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    
+    if not stream.last_prediction:
+        return {"success": True, "data": None, "message": "No prediction yet"}
+    
+    return {"success": True, "data": stream.last_prediction}
+
+
+@app.get("/api/v1/inference/scores")
+async def get_all_scores():
+    """Get latest inference scores for all streams."""
+    scores = []
+    for stream in stream_manager.streams.values():
+        if stream.last_prediction:
+            scores.append(stream.last_prediction)
+    return {"success": True, "data": scores}
+
+
+@app.get("/api/v1/model/status")
+async def get_model_status():
+    """Get ML model status."""
     return {
-        "service": "ViolenceSense RTSP Live Stream Service",
-        "version": "1.0.0",
-        "status": "running",
-        "docs": "/docs",
-        "endpoints": {
-            "health": "/api/v1/health",
-            "streams": "/api/v1/streams",
-            "events": "/api/v1/events",
-            "websocket": "/ws"
+        "success": True,
+        "data": {
+            "is_loaded": detector.is_loaded,
+            "model_path": str(MODEL_PATH),
+            "threshold": VIOLENCE_THRESHOLD,
+            "inference_interval": INFERENCE_INTERVAL
         }
     }
 
 
+# ============== WebSocket for real-time predictions ==============
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket for real-time violence predictions."""
+    await websocket.accept()
+    active_connections.append(websocket)
+    logger.info(f"WebSocket connected. Total: {len(active_connections)}")
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Total: {len(active_connections)}")
+
+
+# ============== Run ==============
+
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower()
+        "main_simple:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=False,
+        log_level="info"
     )

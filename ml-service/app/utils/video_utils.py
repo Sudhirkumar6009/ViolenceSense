@@ -102,10 +102,10 @@ def preprocess_frames(
     Preprocess frames for model inference.
     
     Args:
-        frames: Numpy array of frames (T, H, W, C)
+        frames: Numpy array of frames (T, H, W, C) in RGB, uint8 [0, 255]
         normalize: Whether to normalize using ImageNet stats
-        mean: Normalization mean
-        std: Normalization std
+        mean: Normalization mean (used only for PyTorch models)
+        std: Normalization std (used only for PyTorch models)
     
     Returns:
         Preprocessed tensor of shape (1, C, T, H, W)

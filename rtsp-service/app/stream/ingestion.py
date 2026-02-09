@@ -79,15 +79,53 @@ class FrameBuffer:
                 return self.buffer[-1]
             return None
     
-    def get_sampled(self, sample_rate: int = 8) -> List[FrameData]:
-        """Get sampled frames at specified FPS."""
+    def get_sampled(self, sample_rate: int = 8, window_seconds: float = 0) -> List[FrameData]:
+        """Get sampled frames at specified FPS.
+        
+        Args:
+            sample_rate: Number of frames to sample.
+            window_seconds: If > 0, only sample from the last N seconds
+                            of the buffer instead of the entire buffer.
+        """
         with self.lock:
             frames = list(self.buffer)
+            
+            # If window_seconds is specified, only use recent frames
+            if window_seconds > 0 and frames:
+                # Estimate FPS from buffer
+                fps_estimate = 30  # default
+                if len(frames) >= 2:
+                    dt = (frames[-1].timestamp - frames[0].timestamp).total_seconds()
+                    if dt > 0:
+                        fps_estimate = len(frames) / dt
+                
+                max_frames = int(window_seconds * fps_estimate)
+                if max_frames < len(frames):
+                    frames = frames[-max_frames:]
+            
             if len(frames) <= sample_rate:
                 return frames
             # Sample evenly distributed frames
             indices = np.linspace(0, len(frames) - 1, sample_rate, dtype=int)
             return [frames[i] for i in indices]
+    
+    def get_latest_consecutive(self, count: int = 16) -> List[FrameData]:
+        """Get the last N consecutive frames from the buffer (no sampling/skipping).
+        
+        This is the CCTV-style method: returns the most recent `count` frames
+        exactly as captured, preserving temporal continuity for the model.
+        
+        Args:
+            count: Number of consecutive frames to return.
+            
+        Returns:
+            List of the last `count` FrameData objects, or fewer if buffer
+            doesn't have enough frames yet.
+        """
+        with self.lock:
+            if len(self.buffer) <= count:
+                return list(self.buffer)
+            return list(self.buffer)[-count:]
     
     def clear(self):
         """Clear the buffer."""
@@ -246,7 +284,7 @@ class StreamIngestion:
                 self.reconnect_attempts = 0
                 
                 if self.on_status_change:
-                    self.on_status_change("connected")
+                    self.on_status_change("running")  # Use "running" to match frontend status
                 
                 logger.info(f"Connected to stream: {self.config.name}")
                 
@@ -337,7 +375,7 @@ class StreamIngestion:
         
         logger.info(f"Stream ingestion stopped for {self.config.name}")
         if self.on_status_change:
-            self.on_status_change("disconnected")
+            self.on_status_change("stopped")  # Use "stopped" to match frontend status
     
     def start(self):
         """Start stream ingestion in a background thread."""
@@ -367,13 +405,26 @@ class StreamIngestion:
         """Get frames from the last N seconds."""
         return self.frame_buffer.get_window(seconds, self.config.target_fps)
     
-    def get_sampled_frames(self, count: int = 16) -> List[FrameData]:
-        """Get sampled frames for inference."""
-        return self.frame_buffer.get_sampled(count)
+    def get_sampled_frames(self, count: int = 16, window_seconds: float = 0) -> List[FrameData]:
+        """Get sampled frames for inference.
+        
+        Args:
+            count: Number of frames to sample.
+            window_seconds: If > 0, sample from last N seconds only.
+        """
+        return self.frame_buffer.get_sampled(count, window_seconds=window_seconds)
     
     def get_latest_frame(self) -> Optional[FrameData]:
         """Get the most recent frame for preview/snapshot."""
         return self.frame_buffer.get_latest()
+    
+    def get_consecutive_frames(self, count: int = 16) -> List[FrameData]:
+        """Get the last N consecutive frames for CCTV-style inference.
+        
+        Returns the most recent `count` frames with no sampling or skipping,
+        preserving exact temporal order for the model's LSTM layer.
+        """
+        return self.frame_buffer.get_latest_consecutive(count)
     
     def get_status(self) -> Dict[str, Any]:
         """Get current stream status."""

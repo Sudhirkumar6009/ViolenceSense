@@ -70,7 +70,7 @@ ViolenceSense is a CCTV-friendly real-time violence detection system designed fo
                                                           │
 ┌─────────────────────────────────────────────────────────┴─────────────────────────┐
 │                          BACKEND SERVICE (Node.js Express)                        │
-│                                   Port: 3001                                      │
+│                                   Port: 5000                                      │
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │  ┌─────────────────────────────────────────────────────────────────────────────┐ │
 │  │                              API ENDPOINTS                                  │ │
@@ -262,8 +262,8 @@ services:
     port: 8000
 
   backend:
-    port: 3001
-    depends_on: [postgresql]
+    port: 5000
+    depends_on: [postgresql, ml-service]
 
   frontend:
     port: 3000
@@ -290,11 +290,11 @@ MODEL_PATH=./models/best_violence_model.keras
 USE_GPU=false
 
 # Backend
-BACKEND_PORT=3001
+BACKEND_PORT=5000
 RTSP_SERVICE_URL=http://localhost:8080
 
 # Frontend
-NEXT_PUBLIC_API_URL=http://localhost:3001
+NEXT_PUBLIC_API_URL=http://localhost:3000
 ```
 
 ## Security Considerations

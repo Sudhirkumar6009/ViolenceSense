@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     )
     
     # Backend Service (for forwarding events)
-    backend_url: str = Field(default="http://localhost:3001", alias="BACKEND_URL")
+    backend_url: str = Field(default="http://localhost:5000", alias="BACKEND_URL")
     
     # Model Path
     model_path: Optional[str] = Field(default="../ml-service/models/violence_model_legacy.h5", alias="MODEL_PATH")

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="ViolenceSense placeholder">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1">
+      <stop offset="0" stop-color="#06313a" />
+      <stop offset="1" stop-color="#063a31" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="700" fill="url(#g)" rx="24" />
+  <g transform="translate(60,60)">
+    <rect width="1080" height="580" fill="#0b1220" rx="16" opacity="0.6" />
+    <g font-family="Inter, Arial, sans-serif" fill="#9be6ff">
+      <text x="40" y="80" font-size="42" font-weight="700">ViolenceSense</text>
+      <text x="40" y="120" font-size="20" fill="#9bd1ea">Real-time violence detection — demo placeholder</text>
+    </g>
+    <g transform="translate(40,160)">
+      <rect x="0" y="0" width="480" height="280" rx="12" fill="#07232a" stroke="#06b6d4" stroke-width="4" />
+      <rect x="520" y="0" width="480" height="280" rx="12" fill="#07232a" stroke="#06b6d4" stroke-width="4" />
+      <text x="40" y="180" fill="#9bd1ea" font-size="18">Place your hero screenshot here</text>
+    </g>
+  </g>
+</svg>

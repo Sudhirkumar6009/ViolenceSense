@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 import asyncio
 import os
 import mimetypes
+import numpy as np
 
 from app.config import settings
 from app.database import EventStatus, AlertSeverity
@@ -144,9 +145,13 @@ async def create_stream(request: StreamCreate):
 async def list_streams():
     """List all streams with status."""
     streams = []
+    # Active streams with full pipeline
     for stream_id, instance in stream_manager.streams.items():
         status = instance.ingestion.get_status()
         streams.append(status)
+    # Lazy-loaded streams (not yet started)
+    for stream_id, lazy_config in stream_manager.lazy_streams.items():
+        streams.append(lazy_config.get_status())
     return {"success": True, "data": streams}
 
 
@@ -274,10 +279,36 @@ async def get_stream_mjpeg(stream_id: int, fps: int = Query(default=15, ge=1, le
     if stream_id not in stream_manager.streams:
         raise HTTPException(status_code=404, detail="Stream not found")
     
+    # Pre-generate a "Loading..." placeholder frame
+    def create_placeholder_frame(width=640, height=360, text="Connecting..."):
+        """Create a placeholder frame with centered text."""
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (30, 30, 30)  # Dark gray background
+        
+        # Add text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.0
+        thickness = 2
+        text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
+        text_x = (width - text_size[0]) // 2
+        text_y = (height + text_size[1]) // 2
+        cv2.putText(frame, text, (text_x, text_y), font, font_scale, (128, 128, 128), thickness)
+        
+        # Add spinning indicator (simple circle)
+        center = (width // 2, height // 2 - 40)
+        cv2.circle(frame, center, 20, (64, 64, 64), 2)
+        
+        _, jpeg_buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return jpeg_buffer.tobytes()
+    
+    placeholder_jpeg = create_placeholder_frame()
+    
     async def generate_mjpeg():
         """Generate MJPEG frames with deduplication to avoid serving stale frames."""
         frame_interval = 1.0 / fps
         last_frame_number = -1
+        placeholder_sent = False
+        waiting_count = 0
         
         while True:
             current_time = asyncio.get_event_loop().time()
@@ -287,14 +318,42 @@ async def get_stream_mjpeg(stream_id: int, fps: int = Query(default=15, ge=1, le
             
             instance = stream_manager.streams[stream_id]
             
+            # If ingestion is not running or no frames yet, send placeholder
             if not instance.ingestion.is_running:
-                await asyncio.sleep(0.5)
+                if not placeholder_sent or waiting_count % 30 == 0:  # Refresh placeholder every ~2s
+                    yield (
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n' +
+                        placeholder_jpeg +
+                        b'\r\n'
+                    )
+                    placeholder_sent = True
+                waiting_count += 1
+                await asyncio.sleep(0.1)
                 continue
             
             frame_data = instance.ingestion.get_latest_frame()
             
-            if frame_data is not None and frame_data.frame_number != last_frame_number:
+            if frame_data is None:
+                # Stream is running but no frames yet - send placeholder
+                if not placeholder_sent or waiting_count % 15 == 0:
+                    yield (
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n' +
+                        placeholder_jpeg +
+                        b'\r\n'
+                    )
+                    placeholder_sent = True
+                waiting_count += 1
+                await asyncio.sleep(frame_interval)
+                continue
+            
+            # Got a real frame
+            if frame_data.frame_number != last_frame_number:
                 last_frame_number = frame_data.frame_number
+                placeholder_sent = False  # Reset so we can send placeholder again if stream stops
+                waiting_count = 0
+                
                 # Encode frame as JPEG — quality 75 balances sharpness vs bandwidth
                 success, jpeg_buffer = cv2.imencode(
                     '.jpg', frame_data.frame,
@@ -435,6 +494,36 @@ async def dismiss_event(event_id: int, request: EventUpdateRequest = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/events/{event_id}/action-executed")
+async def action_executed(event_id: int, request: EventUpdateRequest = None):
+    """Mark event as action executed (user took action)."""
+    try:
+        await stream_manager.update_event_status(
+            event_id=event_id,
+            status=EventStatus.ACTION_EXECUTED,
+            reviewed_by=request.reviewed_by if request else None,
+            notes=request.notes if request else "Action executed by user"
+        )
+        return {"success": True, "message": f"Event {event_id} marked as action executed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/events/{event_id}/no-action-required")
+async def no_action_required(event_id: int, request: EventUpdateRequest = None):
+    """Mark event as no action required."""
+    try:
+        await stream_manager.update_event_status(
+            event_id=event_id,
+            status=EventStatus.NO_ACTION_REQUIRED,
+            reviewed_by=request.reviewed_by if request else None,
+            notes=request.notes if request else "No action required"
+        )
+        return {"success": True, "message": f"Event {event_id} marked as no action required"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============== Clip Endpoints ==============
 
 @router.get("/clips/{filename}")
@@ -505,6 +594,21 @@ async def get_thumbnail(filename: str):
     
     return FileResponse(
         path=str(thumb_path),
+        media_type="image/jpeg",
+        filename=filename
+    )
+
+
+@router.get("/person-images/{filename}")
+async def get_person_image(filename: str):
+    """Get captured person image from a violence event."""
+    image_path = Path(settings.clips_dir) / filename
+    
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Person image not found")
+    
+    return FileResponse(
+        path=str(image_path),
         media_type="image/jpeg",
         filename=filename
     )

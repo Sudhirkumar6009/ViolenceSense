@@ -37,6 +37,37 @@ class StreamInstance:
         return self.config.name
 
 
+@dataclass
+class LazyStreamConfig:
+    """Lightweight stream config for lazy loading - no model/pipeline created yet."""
+    id: int
+    name: str
+    url: str
+    stream_type: str
+    location: Optional[str]
+    custom_threshold: Optional[float]
+    
+    def get_status(self) -> dict:
+        """Return status for uninitialized stream."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "url": self.url,
+            "rtsp_url": self.url,
+            "type": self.stream_type,
+            "stream_type": self.stream_type,
+            "status": "stopped",
+            "is_running": False,
+            "is_connected": False,
+            "frame_count": 0,
+            "buffer_size": 0,
+            "last_frame_time": None,
+            "last_frame_at": None,
+            "error_message": None,
+            "reconnect_attempts": 0
+        }
+
+
 class StreamManager:
     """
     Central manager for all streams, inference pipelines, and event detection.
@@ -44,7 +75,8 @@ class StreamManager:
     """
     
     def __init__(self):
-        self.streams: Dict[int, StreamInstance] = {}
+        self.streams: Dict[int, StreamInstance] = {}  # Active streams with full pipeline
+        self.lazy_streams: Dict[int, LazyStreamConfig] = {}  # Inactive streams (lazy loaded)
         self.is_initialized = False
         self._websocket_broadcast = None  # Set by API
         
@@ -63,7 +95,7 @@ class StreamManager:
         logger.info("Stream manager initialized")
     
     async def _load_streams_from_db(self):
-        """Load active streams from database."""
+        """Load active streams from database (lazy - no model/pipeline created)."""
         try:
             async with async_session() as session:
                 result = await session.execute(
@@ -72,8 +104,17 @@ class StreamManager:
                 db_streams = result.scalars().all()
                 
                 for db_stream in db_streams:
-                    logger.info(f"Loaded stream from DB: {db_stream.name}")
-                    # Don't auto-start, just register
+                    logger.info(f"Loaded stream from DB: {db_stream.name} (lazy)")
+                    # Store as lazy config - pipeline will be created when stream is started
+                    lazy_config = LazyStreamConfig(
+                        id=db_stream.id,
+                        name=db_stream.name,
+                        url=db_stream.url,
+                        stream_type=db_stream.stream_type or "rtsp",
+                        location=db_stream.location,
+                        custom_threshold=db_stream.custom_threshold
+                    )
+                    self.lazy_streams[db_stream.id] = lazy_config
                     
         except Exception as e:
             logger.error(f"Failed to load streams from DB: {e}")
@@ -188,6 +229,24 @@ class StreamManager:
     
     async def start_stream(self, stream_id: int):
         """Start a stream and its inference pipeline."""
+        # Check if stream is lazy-loaded and needs full initialization
+        if stream_id in self.lazy_streams and stream_id not in self.streams:
+            lazy_config = self.lazy_streams[stream_id]
+            logger.info(f"Initializing lazy stream: {lazy_config.name}")
+            
+            # Create full config
+            config = StreamConfig(
+                id=lazy_config.id,
+                name=lazy_config.name,
+                url=lazy_config.url,
+                stream_type=lazy_config.stream_type
+            )
+            # Create full stream instance with pipeline
+            instance = self._create_stream_instance(config, lazy_config.custom_threshold)
+            self.streams[stream_id] = instance
+            # Remove from lazy streams
+            del self.lazy_streams[stream_id]
+        
         if stream_id not in self.streams:
             raise ValueError(f"Stream {stream_id} not found")
         
@@ -200,7 +259,7 @@ class StreamManager:
         await instance.pipeline.start()
         
         # Update database
-        await self._update_stream_status(stream_id, "connected")
+        await self._update_stream_status(stream_id, "running")
         
         logger.info(f"Started stream: {instance.name}")
     
@@ -218,7 +277,7 @@ class StreamManager:
         instance.ingestion.stop()
         
         # Update database
-        await self._update_stream_status(stream_id, "disconnected")
+        await self._update_stream_status(stream_id, "stopped")
         
         logger.info(f"Stopped stream: {instance.name}")
     
@@ -227,6 +286,10 @@ class StreamManager:
         if stream_id in self.streams:
             await self.stop_stream(stream_id)
             del self.streams[stream_id]
+        
+        # Also remove from lazy streams if present
+        if stream_id in self.lazy_streams:
+            del self.lazy_streams[stream_id]
         
         # Mark as inactive in database
         async with async_session() as session:
@@ -246,7 +309,7 @@ class StreamManager:
                 values = {"status": status, "updated_at": datetime.utcnow()}
                 if error:
                     values["error_message"] = error
-                if status == "connected":
+                if status == "running":
                     values["last_frame_at"] = datetime.utcnow()
                 
                 await session.execute(
@@ -333,19 +396,28 @@ class StreamManager:
     
     def get_stream_status(self, stream_id: int) -> Optional[Dict[str, Any]]:
         """Get status for a specific stream."""
-        if stream_id not in self.streams:
-            return None
-        
-        instance = self.streams[stream_id]
-        return {
-            "stream": instance.ingestion.get_status(),
-            "pipeline": instance.pipeline.get_status(),
-            "detector": instance.detector.get_status()
-        }
+        # Check active streams first
+        if stream_id in self.streams:
+            instance = self.streams[stream_id]
+            return {
+                "stream": instance.ingestion.get_status(),
+                "pipeline": instance.pipeline.get_status(),
+                "detector": instance.detector.get_status()
+            }
+        # Check lazy streams
+        if stream_id in self.lazy_streams:
+            lazy_config = self.lazy_streams[stream_id]
+            return {
+                "stream": lazy_config.get_status(),
+                "pipeline": {"is_running": False, "model_loaded": False},
+                "detector": {"in_event": False}
+            }
+        return None
     
     def get_all_status(self) -> List[Dict[str, Any]]:
         """Get status for all streams."""
-        return [self.get_stream_status(sid) for sid in self.streams]
+        all_ids = list(self.streams.keys()) + list(self.lazy_streams.keys())
+        return [self.get_stream_status(sid) for sid in all_ids]
     
     async def get_events(
         self,

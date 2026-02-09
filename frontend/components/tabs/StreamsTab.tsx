@@ -4,35 +4,55 @@ import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { StreamCard } from "@/components/StreamCard";
 import { StreamForm } from "@/components/StreamForm";
-import { Stream, StreamCreateRequest } from "@/types";
+import { Stream, StreamCreateRequest, StreamStatusMessage } from "@/types";
 import { streamService } from "@/services/streamApi";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useAppStore } from "@/hooks/useStore";
 
 export default function StreamsTab() {
-  const [streams, setStreams] = useState<Stream[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Use global store for streams to persist across tab switches
+  const {
+    streams,
+    streamsLoaded,
+    streamsError,
+    setStreams,
+    setStreamsError,
+    updateStreamStatus,
+  } = useAppStore();
+
+  const [loading, setLoading] = useState(!streamsLoaded); // Only show loading if never loaded
   const [formOpen, setFormOpen] = useState(false);
   const [editingStream, setEditingStream] = useState<Stream | null>(null);
-  const { scores, isConnected } = useWebSocket();
+
+  // Handle real-time stream status updates
+  const handleStreamStatus = useCallback(
+    (statusData: StreamStatusMessage) => {
+      updateStreamStatus(String(statusData.stream_id), statusData.status);
+    },
+    [updateStreamStatus],
+  );
+
+  const { scores, isConnected, connect } = useWebSocket({
+    onStreamStatus: handleStreamStatus,
+  });
 
   const fetchStreams = useCallback(async () => {
     try {
       const response = await streamService.getStreams();
       if (response.success && response.data) {
         setStreams(response.data);
-        setError(null);
       } else {
-        setError(response.error || "Failed to fetch streams");
+        setStreamsError(response.error || "Failed to fetch streams");
       }
     } catch (err: any) {
-      setError(err.message || "Failed to connect to RTSP service");
+      setStreamsError(err.message || "Failed to connect to RTSP service");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setStreams, setStreamsError]);
 
   useEffect(() => {
+    // Always fetch on mount to get latest data, but don't show loading if we have cached data
     fetchStreams();
     const interval = setInterval(fetchStreams, 10000);
     return () => clearInterval(interval);
@@ -41,25 +61,42 @@ export default function StreamsTab() {
   const handleStart = useCallback(
     async (id: string) => {
       try {
+        // Optimistically update status to "starting"
+        updateStreamStatus(id, "starting");
+
         await streamService.startStream(id);
-        await fetchStreams();
+
+        // Poll more frequently for a few seconds to catch the "running" status
+        let pollCount = 0;
+        const quickPoll = setInterval(async () => {
+          pollCount++;
+          await fetchStreams();
+          if (pollCount >= 5) {
+            clearInterval(quickPoll);
+          }
+        }, 1000);
       } catch (err: any) {
         console.error("Failed to start stream:", err);
+        await fetchStreams();
       }
     },
-    [fetchStreams],
+    [fetchStreams, updateStreamStatus],
   );
 
   const handleStop = useCallback(
     async (id: string) => {
       try {
+        // Optimistically update status to "stopping"
+        updateStreamStatus(id, "stopping");
+
         await streamService.stopStream(id);
         await fetchStreams();
       } catch (err: any) {
         console.error("Failed to stop stream:", err);
+        await fetchStreams();
       }
     },
-    [fetchStreams],
+    [fetchStreams, updateStreamStatus],
   );
 
   const handleDelete = useCallback(
@@ -97,9 +134,17 @@ export default function StreamsTab() {
     setEditingStream(null);
   }, []);
 
-  const runningCount = streams.filter((s) => s.status === "running").length;
-  const stoppedCount = streams.filter((s) => s.status === "stopped").length;
+  // Count streams by status
+  const runningCount = streams.filter(
+    (s) => s.status === "running" || s.status === "online",
+  ).length;
+  const stoppedCount = streams.filter(
+    (s) => s.status === "stopped" || s.status === "offline",
+  ).length;
   const errorCount = streams.filter((s) => s.status === "error").length;
+
+// Show all streams (not just running ones) so users can start stopped streams
+  const visibleStreams = streams;
 
   return (
     <div>
@@ -112,14 +157,22 @@ export default function StreamsTab() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-lg">
+          <button
+            onClick={() => !isConnected && connect()}
+            className={`flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-lg transition-colors ${!isConnected ? "hover:bg-slate-700 cursor-pointer" : ""}`}
+            title={
+              isConnected
+                ? "Connected to real-time updates"
+                : "Click to reconnect"
+            }
+          >
             <div
-              className={`h-2 w-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`}
+              className={`h-2 w-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500 animate-pulse"}`}
             />
             <span className="text-sm text-slate-400">
-              {isConnected ? "Live" : "Disconnected"}
+              {isConnected ? "Live" : "Disconnected - Click to reconnect"}
             </span>
-          </div>
+          </button>
           <button
             onClick={() => setFormOpen(true)}
             className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg font-medium transition-colors"
@@ -150,7 +203,7 @@ export default function StreamsTab() {
       </div>
 
       {/* Error */}
-      {error && (
+      {streamsError && (
         <div className="mb-6 p-4 bg-red-500/20 border border-red-500/30 rounded-lg">
           <div className="flex items-center gap-3">
             <svg
@@ -168,7 +221,7 @@ export default function StreamsTab() {
             </svg>
             <div>
               <p className="text-red-400 font-medium">Connection Error</p>
-              <p className="text-red-300/70 text-sm">{error}</p>
+              <p className="text-red-300/70 text-sm">{streamsError}</p>
             </div>
             <button
               onClick={fetchStreams}
@@ -188,7 +241,7 @@ export default function StreamsTab() {
       )}
 
       {/* Empty */}
-      {!loading && streams.length === 0 && !error && (
+      {!loading && streams.length === 0 && !streamsError && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -226,10 +279,10 @@ export default function StreamsTab() {
       )}
 
       {/* Grid */}
-      {!loading && streams.length > 0 && (
+      {!loading && visibleStreams.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
           <AnimatePresence mode="popLayout">
-            {streams.map((stream) => (
+            {visibleStreams.map((stream) => (
               <StreamCard
                 key={stream.id}
                 stream={stream}

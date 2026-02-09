@@ -8,4 +8,5 @@ export { default as DashboardLayout } from "./DashboardLayout";
 export { StreamCard, StreamCardCompact } from "./StreamCard";
 export { AlertCard, LiveAlertBanner } from "./AlertCard";
 export { EventModal } from "./EventModal";
+export { EventDetailModal } from "./EventDetailModal";
 export { StreamForm } from "./StreamForm";

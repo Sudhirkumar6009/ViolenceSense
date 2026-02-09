@@ -5,10 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Shield, Loader2, CheckCircle, XCircle } from "lucide-react";
 import { authService } from "@/services/authService";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { refreshUser } = useAuth();
   const [status, setStatus] = useState<"loading" | "success" | "error">(
     "loading",
   );
@@ -40,6 +42,9 @@ export default function AuthCallbackPage() {
             provider: "google",
           });
 
+          // Update React context with the user data
+          await refreshUser();
+
           setStatus("success");
           setMessage("Login successful! Redirecting...");
           setTimeout(() => router.push("/dashboard"), 1500);
@@ -56,7 +61,7 @@ export default function AuthCallbackPage() {
     };
 
     handleCallback();
-  }, [searchParams, router]);
+  }, [searchParams, router, refreshUser]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4">

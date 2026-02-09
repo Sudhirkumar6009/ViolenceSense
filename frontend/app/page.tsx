@@ -86,16 +86,16 @@ export default function Home() {
 
       {/* Hero Section */}
       <main className="max-w-7xl mx-auto px-6 pt-10 pb-16">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-16 items-center">
           {/* Left Content */}
-          <div>
+          <div className="lg:col-span-2">
             {/* Section Label */}
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               className="flex items-center gap-4 mb-8"
             >
-              <span className="text-xs tracking-[0.3em] text-gray-500 uppercase font-medium">
+              <span className="text-xs tracking-[0.3em] text-gray-500 uppercase font-medium mt-10">
                 Next-Gen Security Intelligence
               </span>
               <div className="flex-1 h-px bg-gray-800" />
@@ -181,14 +181,22 @@ export default function Home() {
             </motion.div>
           </div>
 
-          {/* Right Content - Dashboard Preview */}
+          {/* Right Content - Hero Image */}
           <motion.div
             initial={{ opacity: 0, x: 40 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.3 }}
-            className="relative"
+            className="relative lg:col-span-3"
           >
-            <DashboardPreview health={health} stats={stats} />
+            <div className="relative h-full flex items-center">
+              {/* Glow Effect */}
+              <div className="absolute inset-0 bg-cyan-500/10 blur-3xl rounded-full" />
+              <img
+                src="/assets/landing_demo.png"
+                alt="ViolenceSense - Real-time Violence Detection System"
+                className="relative w-full h-auto max-h-[700px] object-contain rounded-2xl shadow-2xl"
+              />
+            </div>
           </motion.div>
         </div>
       </main>

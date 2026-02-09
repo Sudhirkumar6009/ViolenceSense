@@ -17,10 +17,12 @@ import {
   CheckCircle,
 } from "lucide-react";
 import { authService } from "@/services/authService";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { register } = useAuth();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -60,16 +62,12 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const response = await authService.register({
-        username,
-        email,
-        password,
-      });
+      const result = await register(username, email, password);
 
-      if (response.success) {
+      if (result.success) {
         router.push("/dashboard");
       } else {
-        setError(response.error || "Registration failed");
+        setError(result.error || "Registration failed");
       }
     } catch (err) {
       setError("An unexpected error occurred");

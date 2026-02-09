@@ -230,10 +230,11 @@ export interface Stream {
     | "offline"
     | "error"
     | "connecting"
-    | "running"
-    | "stopped"
+    | "running" // Active stream
+    | "stopped" // Inactive stream
     | "starting"
-    | "stopping";
+    | "stopping"
+    | "reconnecting"; // Attempting to reconnect
   last_frame_at?: string;
   last_frame_time?: string; // Backend alias
   error_message?: string;
@@ -282,12 +283,14 @@ export interface StreamStats {
 
 export type EventSeverity = "low" | "medium" | "high" | "critical";
 export type EventStatus =
-  | "new"
-  | "pending"
-  | "confirmed"
-  | "dismissed"
-  | "reviewed"
-  | "auto_dismissed";
+  | "NEW"
+  | "PENDING"
+  | "CONFIRMED"
+  | "DISMISSED"
+  | "REVIEWED"
+  | "AUTO_DISMISSED"
+  | "ACTION_EXECUTED"
+  | "NO_ACTION_REQUIRED";
 
 export interface ViolenceEvent {
   id: string;
@@ -310,6 +313,8 @@ export interface ViolenceEvent {
   clip_path?: string;
   clip_duration?: number;
   thumbnail_path?: string;
+  person_images?: string[];
+  person_count?: number;
   reviewed_at?: string;
   reviewed_by?: string;
   notes?: string;
@@ -402,6 +407,12 @@ export interface AlertMessage {
   thumbnail_path?: string;
   clip_duration?: number;
   duration?: number;
+}
+
+export interface StreamStatusMessage {
+  stream_id: string;
+  status: Stream["status"];
+  timestamp?: string;
 }
 
 // ============================================

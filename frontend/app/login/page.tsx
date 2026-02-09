@@ -15,11 +15,13 @@ import {
   Loader2,
 } from "lucide-react";
 import { authService } from "@/services/authService";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -34,13 +36,13 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const response = await authService.login({ email, password });
+      const result = await login(email, password);
 
-      if (response.success) {
+      if (result.success) {
         const redirectTo = searchParams.get("redirect") || "/dashboard";
         router.push(redirectTo);
       } else {
-        setError(response.error || "Login failed");
+        setError(result.error || "Login failed");
       }
     } catch (err) {
       setError("An unexpected error occurred");
