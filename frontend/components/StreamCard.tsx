@@ -269,8 +269,9 @@ export function StreamCard({
         ? "bg-yellow-500"
         : "bg-green-500";
 
-  // MJPEG stream URL with cache-busting
-  const mjpegUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/mjpeg?fps=15&_t=${streamKey}`;
+  // MJPEG stream URL with cache-busting and score overlay
+  const mjpegUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/mjpeg?overlay=true&_t=${streamKey}`;
+  const mjpegUrlNoOverlay = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/mjpeg?overlay=false&_t=${streamKey}`;
   const snapshotUrl = `${RTSP_SERVICE_URL}/api/v1/streams/${stream.id}/snapshot?_t=${streamKey}`;
 
   return (

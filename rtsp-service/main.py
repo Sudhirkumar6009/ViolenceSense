@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Tuple, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from collections import deque
 from uuid import uuid4
@@ -28,9 +28,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from loguru import logger
+from sqlalchemy import select, update
 
 # Import face extractor
 from app.detection.face_extractor import get_face_extractor
+
+# Import database modules for persistence
+from app.database import (
+    init_db, async_session, 
+    Event, Stream as DBStream, EventStatus, AlertSeverity
+)
+from app.config import settings
 
 
 # Configure logging
@@ -484,17 +492,71 @@ def broadcast_event_end(event: ViolenceEventState, clip_duration: float):
     }
     _broadcast_ws("violence_alert", alert)
     
-    # Also store event in memory for API access
-    store_event(alert)
+    # Store event in database for persistence
+    asyncio.create_task(store_event_async(alert))
 
 
-# In-memory event storage (for demo - use database in production)
+# In-memory event storage (kept for backward compatibility, but DB is primary)
 stored_events: List[dict] = []
 MAX_STORED_EVENTS = 100
 
 
+async def store_event_async(event: dict):
+    """Store event in PostgreSQL database."""
+    try:
+        async with async_session() as session:
+            # Get confidence - try multiple field names for compatibility
+            confidence = event.get("max_confidence") or event.get("max_score") or event.get("peak_confidence") or event.get("confidence", 0)
+            avg_confidence = event.get("avg_confidence") or event.get("avg_score") or confidence
+            
+            # Determine severity based on confidence
+            if confidence >= 0.95:
+                severity = AlertSeverity.CRITICAL
+            elif confidence >= 0.85:
+                severity = AlertSeverity.HIGH
+            elif confidence >= 0.7:
+                severity = AlertSeverity.MEDIUM
+            else:
+                severity = AlertSeverity.LOW
+            
+            # Parse datetime from ISO string
+            start_time = datetime.fromisoformat(event.get("start_time", datetime.utcnow().isoformat()))
+            end_time = datetime.fromisoformat(event.get("end_time", datetime.utcnow().isoformat())) if event.get("end_time") else None
+            
+            # Convert stream_id to int (may be passed as string)
+            stream_id_raw = event.get("stream_id", 0)
+            stream_id = int(stream_id_raw) if stream_id_raw else 0
+            
+            db_event = Event(
+                stream_id=stream_id,
+                stream_name=event.get("stream_name", "Unknown"),
+                start_time=start_time,
+                end_time=end_time,
+                duration_seconds=event.get("duration_seconds") or event.get("duration"),
+                max_confidence=confidence,
+                avg_confidence=avg_confidence,
+                min_confidence=confidence,
+                frame_count=1,
+                severity=severity,
+                status=EventStatus.PENDING,
+                clip_path=event.get("clip_path"),
+                clip_duration=event.get("clip_duration"),
+                thumbnail_path=event.get("thumbnail_path"),
+            )
+            session.add(db_event)
+            await session.commit()
+            logger.info(f"📝 Event stored in database: stream={event.get('stream_name')}, confidence={confidence:.1%}, clip={event.get('clip_path')}")
+    except Exception as e:
+        logger.error(f"Failed to store event in database: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to in-memory storage
+        stored_events.insert(0, event)
+        stored_events[:] = stored_events[:MAX_STORED_EVENTS]
+
+
 def store_event(event: dict):
-    """Store event in memory."""
+    """Store event - wrapper for sync calls (deprecated, use store_event_async)."""
     global stored_events
     stored_events.insert(0, event)
     stored_events = stored_events[:MAX_STORED_EVENTS]
@@ -536,6 +598,11 @@ class SimpleRTSPStream:
         # Latest prediction
         self.last_prediction: Optional[dict] = None
         self.prediction_callback: Optional[Callable[[dict], None]] = None  # Set by manager
+        
+        # Cached JPEG for low-latency streaming (encoded in capture loop)
+        self._last_jpeg: Optional[bytes] = None
+        self._last_jpeg_with_overlay: Optional[bytes] = None
+        self._jpeg_encode_quality = 85  # Higher quality for smoother video
         
         # Violence alert cooldown tracking
         self._last_violence_alert_time = 0.0
@@ -591,15 +658,38 @@ class SimpleRTSPStream:
                     self._connect()
                     continue
                 
-                # Grab multiple frames to flush buffer and get latest
-                for _ in range(2):
-                    self.capture.grab()
-                
-                ret, frame = self.capture.retrieve()
+                # Read frame directly for minimal latency
+                ret, frame = self.capture.read()
                 if ret:
                     current_time = time.time()
+                    
+                    # Encode JPEG once per frame for efficient streaming
+                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_encode_quality])
+                    jpeg_bytes = jpeg.tobytes()
+                    
+                    # Create overlay version with violence score
+                    overlay_frame = frame.copy()
+                    score = self.last_prediction.get('violence_score', 0) if self.last_prediction else 0
+                    score_pct = int(score * 100)
+                    
+                    # Draw score overlay
+                    color = (0, 0, 255) if score > 0.65 else (0, 255, 255) if score > 0.4 else (0, 255, 0)  # BGR
+                    cv2.rectangle(overlay_frame, (10, 10), (180, 50), (0, 0, 0), -1)  # Black background
+                    cv2.putText(overlay_frame, f"Violence: {score_pct}%", (15, 40), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    
+                    # Draw score bar
+                    bar_width = int(150 * score)
+                    cv2.rectangle(overlay_frame, (15, 55), (15 + bar_width, 65), color, -1)
+                    cv2.rectangle(overlay_frame, (15, 55), (165, 65), (128, 128, 128), 1)
+                    
+                    _, overlay_jpeg = cv2.imencode('.jpg', overlay_frame, [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_encode_quality])
+                    overlay_jpeg_bytes = overlay_jpeg.tobytes()
+                    
                     with self._lock:
                         self.last_frame = frame
+                        self._last_jpeg = jpeg_bytes
+                        self._last_jpeg_with_overlay = overlay_jpeg_bytes
                         self.frame_buffer.append(frame.copy())
                         self.frame_count += 1
                         self.is_connected = True
@@ -727,7 +817,7 @@ class SimpleRTSPStream:
             logger.info(f"Connecting to: {self.url}")
             
             # Use FFmpeg backend with low-latency options
-            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1'
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1|timeout;5000000'
             
             self.capture = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
             
@@ -738,13 +828,24 @@ class SimpleRTSPStream:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             
-            if self.capture.isOpened():
-                self.is_connected = True
-                logger.info(f"Connected: {self.name}")
-            else:
-                self.is_connected = False
-                self.error = "Failed to open stream"
-                time.sleep(2)
+            # Wait up to 5 seconds for connection
+            connect_start = time.time()
+            while time.time() - connect_start < 5:
+                if self.capture.isOpened():
+                    # Try to read a test frame to confirm connection
+                    ret, _ = self.capture.read()
+                    if ret:
+                        self.is_connected = True
+                        self.error = None
+                        logger.info(f"Connected: {self.name}")
+                        return
+                time.sleep(0.5)
+            
+            # Connection timed out
+            self.is_connected = False
+            self.error = "Connection timed out - check RTSP URL"
+            logger.warning(f"Connection timeout: {self.name} - {self.url}")
+            time.sleep(2)
                 
         except Exception as e:
             self.error = str(e)
@@ -756,23 +857,22 @@ class SimpleRTSPStream:
         with self._lock:
             return self.last_frame.copy() if self.last_frame is not None else None
     
-    def get_jpeg(self) -> Optional[bytes]:
-        """Get the latest frame as JPEG bytes."""
-        frame = self.get_frame()
-        if frame is None:
-            return None
-        _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        return jpeg.tobytes()
+    def get_jpeg(self, with_overlay: bool = False) -> Optional[bytes]:
+        """Get the latest frame as JPEG bytes (pre-encoded for low latency)."""
+        with self._lock:
+            if with_overlay:
+                return self._last_jpeg_with_overlay
+            return self._last_jpeg
     
     def get_status(self) -> dict:
         """Get stream status in frontend-compatible format."""
         # Determine status string
-        if self.is_running and self.is_connected:
+        if self.error:
+            status = "error"
+        elif self.is_running and self.is_connected:
             status = "running"
         elif self.is_running and not self.is_connected:
             status = "connecting"
-        elif self.error:
-            status = "error"
         else:
             status = "stopped"
         
@@ -885,12 +985,44 @@ stream_manager = StreamManager()
 
 # ============== FastAPI App ==============
 
+async def load_streams_from_db():
+    """Load active streams from database."""
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                select(DBStream).where(DBStream.is_active == True)
+            )
+            db_streams = result.scalars().all()
+            
+            for db_stream in db_streams:
+                logger.info(f"Loaded stream from DB: {db_stream.name} (ID: {db_stream.id})")
+                # Create stream in manager (but don't auto-start)
+                stream = SimpleRTSPStream(
+                    stream_id=db_stream.id,
+                    name=db_stream.name,
+                    url=db_stream.url,
+                )
+                stream_manager.streams[db_stream.id] = stream
+                
+            logger.info(f"✅ Loaded {len(db_streams)} streams from database")
+    except Exception as e:
+        logger.error(f"Failed to load streams from DB: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     global main_event_loop
     main_event_loop = asyncio.get_running_loop()
-    logger.info("🚀 Starting Simple RTSP Service...")
+    logger.info("🚀 Starting RTSP Service with Database Persistence...")
+    
+    # Initialize database
+    await init_db()
+    logger.info("✅ Database initialized")
+    
+    # Load streams from database
+    await load_streams_from_db()
+    
     yield
     logger.info("🛑 Shutting down...")
     stream_manager.shutdown()
@@ -934,12 +1066,42 @@ async def health():
 
 @app.post("/api/v1/streams")
 async def create_stream(request: StreamCreate):
-    """Add a new RTSP stream."""
-    stream_id = stream_manager.add_stream(
+    """Add a new RTSP stream and persist to database."""
+    # Save to database first
+    try:
+        async with async_session() as session:
+            db_stream = DBStream(
+                name=request.name,
+                url=request.url,
+                stream_type="rtsp",
+                is_active=True,
+            )
+            session.add(db_stream)
+            await session.commit()
+            await session.refresh(db_stream)
+            stream_id = db_stream.id
+            logger.info(f"📝 Stream saved to database: {request.name} (ID: {stream_id})")
+    except Exception as e:
+        logger.error(f"Failed to save stream to database: {e}")
+        # Fallback to memory-only
+        stream_id = stream_manager.add_stream(
+            name=request.name,
+            url=request.url,
+            auto_start=request.auto_start
+        )
+        return {"success": True, "stream_id": str(stream_id)}
+    
+    # Create stream in manager
+    stream = SimpleRTSPStream(
+        stream_id=stream_id,
         name=request.name,
         url=request.url,
-        auto_start=request.auto_start
     )
+    stream_manager.streams[stream_id] = stream
+    
+    if request.auto_start:
+        stream.start()
+    
     return {"success": True, "stream_id": str(stream_id)}
 
 
@@ -980,9 +1142,23 @@ async def stop_stream(stream_id: int):
 
 @app.delete("/api/v1/streams/{stream_id}")
 async def delete_stream(stream_id: int):
-    """Delete a stream."""
+    """Delete a stream from database and memory."""
     if stream_id not in stream_manager.streams:
         raise HTTPException(status_code=404, detail="Stream not found")
+    
+    # Remove from database
+    try:
+        async with async_session() as session:
+            await session.execute(
+                update(DBStream)
+                .where(DBStream.id == stream_id)
+                .values(is_active=False)
+            )
+            await session.commit()
+            logger.info(f"📝 Stream {stream_id} marked inactive in database")
+    except Exception as e:
+        logger.error(f"Failed to update stream in database: {e}")
+    
     stream_manager.remove_stream(stream_id)
     return {"success": True, "message": f"Stream {stream_id} deleted"}
 
@@ -1006,8 +1182,13 @@ async def get_frame(stream_id: int):
 
 
 @app.get("/api/v1/streams/{stream_id}/mjpeg")
-async def mjpeg_stream(stream_id: int):
-    """Get real-time MJPEG video stream."""
+async def mjpeg_stream(stream_id: int, overlay: bool = True):
+    """Get real-time MJPEG video stream with optional violence score overlay.
+    
+    Args:
+        stream_id: Stream ID
+        overlay: If True, includes violence score overlay on video (default: True)
+    """
     stream = stream_manager.get_stream(stream_id)
     if not stream:
         raise HTTPException(status_code=404, detail="Stream not found")
@@ -1015,14 +1196,14 @@ async def mjpeg_stream(stream_id: int):
     async def generate():
         last_frame = None
         while True:
-            jpeg = stream.get_jpeg()
+            jpeg = stream.get_jpeg(with_overlay=overlay)
             if jpeg and jpeg != last_frame:
                 yield (
                     b'--frame\r\n'
                     b'Content-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n'
                 )
                 last_frame = jpeg
-            await asyncio.sleep(0.016)  # ~60 FPS max, smoother display
+            await asyncio.sleep(0.008)  # ~120 FPS max for smoother real-time display
     
     return StreamingResponse(
         generate(),
@@ -1079,22 +1260,112 @@ async def get_model_status():
 
 @app.get("/api/v1/events")
 async def get_events(limit: int = 50, offset: int = 0, status: Optional[str] = None):
-    """Get violence events with clips."""
-    events = stored_events[offset:offset + limit]
-    return {
-        "success": True,
-        "data": events,
-        "pagination": {
-            "limit": limit,
-            "offset": offset,
-            "count": len(stored_events)
+    """Get violence events from database."""
+    try:
+        async with async_session() as session:
+            query = select(Event).order_by(Event.created_at.desc())
+            
+            if status:
+                try:
+                    event_status = EventStatus(status)
+                    query = query.where(Event.status == event_status)
+                except ValueError:
+                    pass  # Invalid status, ignore filter
+            
+            query = query.limit(limit).offset(offset)
+            result = await session.execute(query)
+            events = result.scalars().all()
+            
+            # Get total count for pagination
+            count_query = select(Event)
+            if status:
+                try:
+                    event_status = EventStatus(status)
+                    count_query = count_query.where(Event.status == event_status)
+                except ValueError:
+                    pass
+            count_result = await session.execute(count_query)
+            total_count = len(count_result.scalars().all())
+            
+            return {
+                "success": True,
+                "data": [
+                    {
+                        "id": e.id,
+                        "event_id": str(e.id),  # For compatibility
+                        "stream_id": e.stream_id,
+                        "stream_name": e.stream_name,
+                        "start_time": e.start_time.isoformat() if e.start_time else None,
+                        "end_time": e.end_time.isoformat() if e.end_time else None,
+                        "duration_seconds": e.duration_seconds,
+                        "max_confidence": e.max_confidence,
+                        "peak_confidence": e.max_confidence,  # Alias
+                        "avg_confidence": e.avg_confidence,
+                        "severity": e.severity.value if e.severity else None,
+                        "status": e.status.value if e.status else None,
+                        "clip_path": e.clip_path,
+                        "clip_duration": e.clip_duration,
+                        "thumbnail_path": e.thumbnail_path,
+                        "created_at": e.created_at.isoformat() if e.created_at else None
+                    }
+                    for e in events
+                ],
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "count": total_count
+                }
+            }
+    except Exception as e:
+        logger.error(f"Failed to get events from database: {e}")
+        # Fallback to in-memory events
+        events = stored_events[offset:offset + limit]
+        return {
+            "success": True,
+            "data": events,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "count": len(stored_events)
+            }
         }
-    }
 
 
 @app.get("/api/v1/events/{event_id}")
 async def get_event(event_id: str):
-    """Get a specific violence event."""
+    """Get a specific violence event from database."""
+    try:
+        async with async_session() as session:
+            event_id_int = int(event_id)
+            result = await session.execute(
+                select(Event).where(Event.id == event_id_int)
+            )
+            e = result.scalar_one_or_none()
+            if e:
+                return {
+                    "success": True,
+                    "data": {
+                        "id": e.id,
+                        "event_id": str(e.id),
+                        "stream_id": e.stream_id,
+                        "stream_name": e.stream_name,
+                        "start_time": e.start_time.isoformat() if e.start_time else None,
+                        "end_time": e.end_time.isoformat() if e.end_time else None,
+                        "duration_seconds": e.duration_seconds,
+                        "max_confidence": e.max_confidence,
+                        "avg_confidence": e.avg_confidence,
+                        "severity": e.severity.value if e.severity else None,
+                        "status": e.status.value if e.status else None,
+                        "clip_path": e.clip_path,
+                        "clip_duration": e.clip_duration,
+                        "thumbnail_path": e.thumbnail_path,
+                        "created_at": e.created_at.isoformat() if e.created_at else None
+                    }
+                }
+    except (ValueError, Exception) as e:
+        logger.error(f"Failed to get event from database: {e}")
+    
+    # Fallback to in-memory
     for event in stored_events:
         if event.get("event_id") == event_id:
             return {"success": True, "data": event}
@@ -1103,7 +1374,25 @@ async def get_event(event_id: str):
 
 @app.post("/api/v1/events/{event_id}/action-executed")
 async def mark_action_executed(event_id: str):
-    """Mark event as action executed."""
+    """Mark event as action executed in database."""
+    try:
+        async with async_session() as session:
+            event_id_int = int(event_id)
+            await session.execute(
+                update(Event)
+                .where(Event.id == event_id_int)
+                .values(
+                    status=EventStatus.ACTION_EXECUTED,
+                    reviewed_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+            )
+            await session.commit()
+            return {"success": True, "message": "Event marked as action executed"}
+    except (ValueError, Exception) as e:
+        logger.error(f"Failed to update event in database: {e}")
+    
+    # Fallback to in-memory
     for event in stored_events:
         if event.get("event_id") == event_id:
             event["status"] = "ACTION_EXECUTED"
@@ -1114,13 +1403,135 @@ async def mark_action_executed(event_id: str):
 
 @app.post("/api/v1/events/{event_id}/no-action-required")
 async def mark_no_action_required(event_id: str):
-    """Mark event as no action required."""
+    """Mark event as no action required in database."""
+    try:
+        async with async_session() as session:
+            event_id_int = int(event_id)
+            await session.execute(
+                update(Event)
+                .where(Event.id == event_id_int)
+                .values(
+                    status=EventStatus.NO_ACTION_REQUIRED,
+                    reviewed_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+            )
+            await session.commit()
+            return {"success": True, "message": "Event marked as no action required"}
+    except (ValueError, Exception) as e:
+        logger.error(f"Failed to update event in database: {e}")
+    
+    # Fallback to in-memory
     for event in stored_events:
         if event.get("event_id") == event_id:
             event["status"] = "NO_ACTION_REQUIRED"
             event["reviewed_at"] = datetime.utcnow().isoformat()
             return {"success": True, "message": "Event marked as no action required"}
     raise HTTPException(status_code=404, detail="Event not found")
+
+
+@app.post("/api/v1/events/import-clips")
+async def import_clips_as_events():
+    """Import existing clip files as events in the database.
+    
+    This is useful for recovering events that were lost due to bugs or restarts.
+    Parses clip filenames to extract stream name and timestamp.
+    """
+    try:
+        import re
+        imported = 0
+        skipped = 0
+        errors = []
+        
+        async with async_session() as session:
+            # Get existing clip paths to avoid duplicates
+            result = await session.execute(select(Event.clip_path))
+            existing_clips = {row[0] for row in result.fetchall() if row[0]}
+            
+            # Scan clips directory
+            for clip_file in CLIPS_DIR.glob("*.mp4"):
+                clip_filename = clip_file.name
+                
+                # Skip if already in database
+                if clip_filename in existing_clips:
+                    skipped += 1
+                    continue
+                
+                try:
+                    # Parse filename: YYYYMMDD_HHMMSS_StreamName_EventId.mp4
+                    # or: StreamName_EventId_YYYYMMDD_HHMMSS_type.mp4
+                    name = clip_file.stem
+                    
+                    # Try format: YYYYMMDD_HHMMSS_StreamName_UUID
+                    match = re.match(r'^(\d{8})_(\d{6})_(.+?)_([a-f0-9-]+)$', name)
+                    if match:
+                        date_str, time_str, stream_name, event_id = match.groups()
+                        stream_name = stream_name.replace('_', ' ')
+                        timestamp = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
+                    else:
+                        # Try format: StreamName_ID_YYYYMMDD_HHMMSS_type
+                        match = re.match(r'^(.+?)_(\d+)_(\d{8})_(\d{6})_(.+)$', name)
+                        if match:
+                            stream_name, _, date_str, time_str, _ = match.groups()
+                            stream_name = stream_name.replace('_', ' ')
+                            timestamp = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
+                        else:
+                            # Unknown format, use file modification time
+                            timestamp = datetime.fromtimestamp(clip_file.stat().st_mtime)
+                            stream_name = name.split('_')[0] if '_' in name else "Unknown"
+                    
+                    # Check for matching thumbnail
+                    thumb_filename = name + ".jpg"
+                    thumb_path = THUMBNAILS_DIR / thumb_filename
+                    if not thumb_path.exists():
+                        thumb_filename = None
+                    
+                    # Get clip duration from file
+                    cap = cv2.VideoCapture(str(clip_file))
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    clip_duration = frame_count / fps if fps > 0 else 0
+                    cap.release()
+                    
+                    # Create event
+                    db_event = Event(
+                        stream_id=0,  # Unknown stream
+                        stream_name=stream_name,
+                        start_time=timestamp,
+                        end_time=timestamp + timedelta(seconds=clip_duration) if clip_duration else None,
+                        duration_seconds=clip_duration,
+                        max_confidence=0.9,  # Assume high confidence (it was recorded for a reason)
+                        avg_confidence=0.9,
+                        min_confidence=0.9,
+                        frame_count=int(frame_count) if frame_count else 1,
+                        severity=AlertSeverity.HIGH,
+                        status=EventStatus.PENDING,
+                        clip_path=clip_filename,
+                        clip_duration=clip_duration,
+                        thumbnail_path=thumb_filename,
+                    )
+                    session.add(db_event)
+                    imported += 1
+                    logger.info(f"📥 Imported clip as event: {clip_filename} ({stream_name}, {timestamp})")
+                    
+                except Exception as e:
+                    errors.append(f"{clip_filename}: {str(e)}")
+                    logger.error(f"Failed to import clip {clip_filename}: {e}")
+            
+            await session.commit()
+        
+        return {
+            "success": True,
+            "message": f"Import complete: {imported} imported, {skipped} already existed",
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors
+        }
+    except Exception as e:
+        logger.error(f"Failed to import clips: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/clips/{clip_name}")
@@ -1140,7 +1551,11 @@ async def get_clip(clip_name: str):
 @app.get("/api/v1/clips/thumbnails/{thumb_name}")
 async def get_thumbnail(thumb_name: str):
     """Serve a violence event thumbnail."""
+    # Try thumbnails subdirectory first
     thumb_path = THUMBNAILS_DIR / thumb_name
+    if not thumb_path.exists():
+        # Fallback to clips directory (legacy location)
+        thumb_path = CLIPS_DIR / thumb_name
     if not thumb_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail not found")
     
@@ -1161,19 +1576,30 @@ FACE_PARTICIPANTS_DIR.mkdir(exist_ok=True)
 async def extract_faces_from_event(event_id: str):
     """Manually trigger face extraction for an event clip."""
     try:
-        # Find the event to get clip path
-        event = None
-        for e in stored_events:
-            if e.get("event_id") == event_id:
-                event = e
-                break
+        # Find the event in database first
+        clip_filename = None
         
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+        try:
+            event_id_int = int(event_id)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Event).where(Event.id == event_id_int)
+                )
+                db_event = result.scalar_one_or_none()
+                if db_event:
+                    clip_filename = db_event.clip_path
+        except (ValueError, Exception) as e:
+            logger.warning(f"DB lookup failed for event {event_id}: {e}")
         
-        clip_filename = event.get("clip_path")
+        # Fallback to in-memory events
         if not clip_filename:
-            raise HTTPException(status_code=400, detail="No clip available for this event")
+            for e in stored_events:
+                if e.get("event_id") == event_id or str(e.get("id")) == event_id:
+                    clip_filename = e.get("clip_path")
+                    break
+        
+        if not clip_filename:
+            raise HTTPException(status_code=404, detail="Event not found")
         
         clip_path = CLIPS_DIR / clip_filename
         if not clip_path.exists():
@@ -1184,10 +1610,6 @@ async def extract_faces_from_event(event_id: str):
         # Run face extraction
         face_extractor = get_face_extractor()
         faces = face_extractor.process_clip(str(clip_path), event_id)
-        
-        # Update the stored event with face data
-        event["face_paths"] = faces
-        event["participants_count"] = len(faces)
         
         logger.info(f"✅ Extracted {len(faces)} faces for event {event_id}")
         
@@ -1207,7 +1629,6 @@ async def extract_faces_from_event(event_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/v1/faces/{event_id}")
 async def get_event_faces(event_id: str):
