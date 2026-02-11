@@ -23,7 +23,7 @@ from enum import Enum
 import cv2
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -1535,16 +1535,59 @@ async def import_clips_as_events():
 
 
 @app.get("/api/v1/clips/{clip_name}")
-async def get_clip(clip_name: str):
-    """Serve a violence event clip."""
+async def get_clip(clip_name: str, request: Request):
+    """Serve a violence event clip with HTTP Range request support for browser video playback."""
     clip_path = CLIPS_DIR / clip_name
     if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
     
+    file_size = os.path.getsize(clip_path)
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        # Parse Range header: "bytes=start-end"
+        range_str = range_header.replace("bytes=", "")
+        parts = range_str.split("-")
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+        
+        def iter_file():
+            with open(clip_path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(8192, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+        
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Content-Disposition": f'inline; filename="{clip_name}"',
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+    
+    # No range header — send full file
     return FileResponse(
-        clip_path,
+        path=str(clip_path),
         media_type="video/mp4",
-        headers={"Cache-Control": "public, max-age=3600"}
+        filename=clip_name,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Cache-Control": "public, max-age=3600",
+        },
     )
 
 
